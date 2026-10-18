@@ -146,7 +146,7 @@ class ServerPluginExecutor(ToolExecutor):
             .get("news_sources", "")
         )
         if not news_sources:
-            news_sources = "澎湃新闻;百度热搜;财联社"
+            news_sources = "The Paper;Baidu Hot Search;CLS"
         sources_str = news_sources.replace(";", "、")
         try:
             func_item.description["function"]["parameters"]["properties"]["source"][
