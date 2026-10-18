@@ -1,0 +1,6 @@
+-- Add configuration fields for the web search tool
+SET @data_exists = (SELECT COUNT(*) FROM ai_model_provider WHERE id = 'SYSTEM_PLUGIN_WEB_SEARCH');
+SET @sql = IF(@data_exists = 0,
+    'INSERT INTO `ai_model_provider` (`id`, `model_type`, `provider_code`, `name`, `fields`, `sort`, `creator`, `create_date`, `updater`, `update_date`) VALUES (''SYSTEM_PLUGIN_WEB_SEARCH'', ''Plugin'', ''web_search'', ''Web Search'', ''[{\"key\": \"provider\", \"type\": \"string\", \"label\": \"Search source: metaso / tavily\", \"default\": \"metaso\", \"editing\": false, \"selected\": false}, {\"key\": \"description\", \"type\": \"string\", \"label\": \"Tool description\", \"default\": \"Web search tool. Use this tool when the user explicitly needs to search the web.\", \"editing\": false, \"selected\": false}, {\"key\": \"max_results\", \"type\": \"string\", \"label\": \"Number of results\", \"default\": \"5\", \"editing\": false, \"selected\": false}, {\"key\": \"api_key\", \"type\": \"string\", \"label\": \"apiKey\", \"default\": \"mk-XXXX\", \"editing\": false, \"selected\": false}]'', 80, 1988490863118454785, ''2026-05-11 17:15:35'', 1988490863118454785, ''2026-05-12 10:55:49'')',
+    'SELECT ''data already exists, skip'' AS msg');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

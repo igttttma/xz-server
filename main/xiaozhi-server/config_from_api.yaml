@@ -1,0 +1,27 @@
+# If you only want a lightweight installation of xiaozhi-server using local config files, you can ignore this file and do not need to change anything in it
+# If you want to get the config from manager-api, read on:
+# Copy this file into the xiaozhi-server/data directory (create the data directory if it does not exist) and name the copied file .config.yaml
+# Note: if a .config.yaml file already exists in the data directory, delete it first
+# First start manager-api and manager-web, register an account; the first registered account is the administrator
+# As the administrator, open the [Parameter Management] page, find [server.secret], and copy it; note that server.secret changes on every fresh deployment
+# Open the .config.yaml file in the data directory and change manager-api.secret to the server.secret you just copied
+server:
+  ip: 0.0.0.0
+  port: 8000
+  # http service port, used for the vision analysis endpoint
+  http_port: 8003
+  # Vision analysis endpoint address
+  # The vision analysis endpoint address sent to the device
+  # With the default form below, the system automatically generates the vision recognition address and prints it in the startup log; you can open it directly in a browser to confirm
+  # When you deploy with Docker or on the public internet (with SSL, a domain), it may not be accurate
+  # So if you deploy with Docker, set vision_explain to a LAN address
+  # If you deploy on the public internet, set vision_explain to a public address
+  vision_explain: http://your-ip-or-domain:port/mcp/vision/explain
+manager-api:
+  # The address of your manager-api; a LAN IP is preferred
+  # If deploying with Docker, fill in http://xiaozhi-esp32-server-web:8002/xiaozhi
+  url: http://127.0.0.1:8002/xiaozhi
+  # The token of your manager-api, i.e. the server.secret you just copied
+  secret: your-server.secret-value
+# Default system prompt template file
+prompt_template: agent-base-prompt.txt

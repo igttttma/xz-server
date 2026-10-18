@@ -1,0 +1,22 @@
+# Docker installation of the Server
+
+version: '3'
+services:
+  xiaozhi-esp32-server:
+    image: ghcr.nju.edu.cn/xinnan-tech/xiaozhi-esp32-server:server_latest
+    container_name: xiaozhi-esp32-server
+    restart: always
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - TZ=UTC
+    ports:
+      # ws server
+      - "8000:8000"
+      # http service port, used for the simple OTA endpoint (single-service deployment) and the vision analysis endpoint
+      - "8003:8003"
+    volumes:
+      # Config file directory
+      - ./data:/opt/xiaozhi-esp32-server/data
+      # Model file mount; very important
+      - ./models/SenseVoiceSmall/model.pt:/opt/xiaozhi-esp32-server/models/SenseVoiceSmall/model.pt

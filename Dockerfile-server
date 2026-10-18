@@ -1,0 +1,7 @@
+# Production image containing only the application code
+FROM ghcr.io/xinnan-tech/xiaozhi-esp32-server:server-base
+
+COPY main/xiaozhi-server .
+
+# Start the application
+CMD ["python", "app.py"]

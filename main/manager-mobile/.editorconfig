@@ -1,0 +1,13 @@
+root = true
+
+[*] # Applies to all files
+charset = utf-8 # Set the file charset to utf-8
+indent_style = space # Indentation style (tab | space)
+indent_size = 2 # Indentation size
+end_of_line = lf # Line ending type (lf | cr | crlf)
+trim_trailing_whitespace = true # Remove trailing whitespace
+insert_final_newline = true # Always insert a newline at the end of the file
+
+[*.md] # The following rules apply only to md files
+max_line_length = off # Disable the maximum line length limit
+trim_trailing_whitespace = false # Disable trailing whitespace trimming

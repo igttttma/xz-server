@@ -1,0 +1,141 @@
+import { getServiceUrl } from '../api';
+import RequestService from '../httpRequest';
+
+export default {
+    // Bound devices
+    getAgentBindDevices(agentId, callback, failCallback) {
+        RequestService.sendRequest()
+            .url(`${getServiceUrl()}/device/bind/${agentId}`)
+            .method('GET')
+            .success((res) => {
+                RequestService.clearRequestTime();
+                callback(res);
+            })
+            .fail((err) => {
+                RequestService.clearRequestTime();
+                if (failCallback) {
+                    failCallback(err);
+                }
+            })
+            .networkFail((err) => {
+                console.error('Failed to get the device list:', err);
+                RequestService.reAjaxFun(() => {
+                    this.getAgentBindDevices(agentId, callback, failCallback);
+                });
+            }).send();
+    },
+    // Unbind a device
+    unbindDevice(device_id, callback, failCallback) {
+        RequestService.sendRequest()
+            .url(`${getServiceUrl()}/device/unbind`)
+            .method('POST')
+            .data({ deviceId: device_id })
+            .success((res) => {
+                RequestService.clearRequestTime();
+                callback(res);
+            })
+            .fail((err) => {
+                RequestService.clearRequestTime();
+                if (failCallback) {
+                    failCallback(err);
+                }
+            })
+            .networkFail((err) => {
+                console.error('Failed to unbind the device:', err);
+                RequestService.reAjaxFun(() => {
+                    this.unbindDevice(device_id, callback, failCallback);
+                });
+            }).send();
+    },
+    // Bind a device
+    bindDevice(agentId, deviceCode, callback, failCallback) {
+        RequestService.sendRequest()
+            .url(`${getServiceUrl()}/device/bind/${agentId}/${deviceCode}`)
+            .method('POST')
+            .success((res) => {
+                RequestService.clearRequestTime();
+                callback(res);
+            })
+            .fail((err) => {
+                RequestService.clearRequestTime();
+                if (failCallback) {
+                    failCallback(err);
+                }
+            })
+            .networkFail((err) => {
+                console.error('Failed to bind the device:', err);
+                RequestService.reAjaxFun(() => {
+                    this.bindDevice(agentId, deviceCode, callback, failCallback);
+                });
+            }).send();
+    },
+    updateDeviceInfo(id, payload, callback, failCallback) {
+        RequestService.sendRequest()
+            .url(`${getServiceUrl()}/device/update/${id}`)
+            .method('PUT')
+            .data(payload)
+            .success((res) => {
+                RequestService.clearRequestTime()
+                callback(res)
+            })
+            .fail((err) => {
+                RequestService.clearRequestTime();
+                if (failCallback) {
+                    failCallback(err);
+                }
+            })
+            .networkFail((err) => {
+                console.error('Failed to update the OTA status:', err)
+                this.$message.error(err.msg || 'Failed to update the OTA status')
+                RequestService.reAjaxFun(() => {
+                    this.updateDeviceInfo(id, payload, callback, failCallback)
+                })
+            }).send()
+    },
+    // Add a device manually
+    manualAddDevice(params, callback, failCallback) {
+        RequestService.sendRequest()
+            .url(`${getServiceUrl()}/device/manual-add`)
+            .method('POST')
+            .data(params)
+            .success((res) => {
+                RequestService.clearRequestTime();
+                callback(res);
+            })
+            .fail((err) => {
+                RequestService.clearRequestTime();
+                if (failCallback) {
+                    failCallback(err);
+                }
+            })
+            .networkFail((err) => {
+                console.error('Failed to add the device manually:', err);
+                RequestService.reAjaxFun(() => {
+                    this.manualAddDevice(params, callback, failCallback);
+                });
+            }).send();
+    },
+    // Get the device status
+    getDeviceStatus(agentId, callback, failCallback) {
+        RequestService.sendRequest()
+            .url(`${getServiceUrl()}/device/bind/${agentId}`)
+            .method('POST')
+            .data({}) // Send an empty object as the request body
+            .success((res) => {
+                RequestService.clearRequestTime();
+                callback(res);
+            })
+            .fail((err) => {
+                RequestService.clearRequestTime();
+                if (failCallback) {
+                    failCallback(err);
+                }
+            })
+            .networkFail((err) => {
+                console.error('Failed to get the device status:', err);
+                RequestService.reAjaxFun(() => {
+                    this.getDeviceStatus(agentId, callback, failCallback);
+                });
+            }).send();
+    },
+}
