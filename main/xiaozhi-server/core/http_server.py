@@ -3,16 +3,18 @@ from aiohttp import web
 from config.logger import setup_logging
 from core.api.ota_handler import OTAHandler
 from core.api.vision_handler import VisionHandler
+from core.api.portal_handler import PortalHandler
 
 TAG = __name__
 
 
 class SimpleHttpServer:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, ws_server=None):
         self.config = config
         self.logger = setup_logging()
         self.ota_handler = OTAHandler(config)
-        self.vision_handler = VisionHandler(config)
+        self.vision_handler = VisionHandler(config, ws_server)
+        self.portal_handler = PortalHandler(config, ws_server) if ws_server else None
 
     def _get_websocket_url(self, local_ip: str, port: int) -> str:
         """Get the websocket address.
@@ -62,6 +64,35 @@ class SimpleHttpServer:
                             ),
                         ]
                     )
+                    if self.portal_handler:
+                        # Settings portal (edits data/.config.yaml, local-only by default)
+                        portal = self.portal_handler
+                        app.add_routes(
+                            [
+                                web.get("/portal", portal.handle_redirect),
+                                web.get("/portal/", portal.handle_page),
+                                web.get("/portal/api/settings", portal.handle_get_settings),
+                                web.post("/portal/api/settings", portal.handle_post_settings),
+                                web.get("/portal/api/memory", portal.handle_get_memory),
+                                web.delete("/portal/api/memory", portal.handle_delete_memory),
+                                web.get("/portal/api/blimp", portal.handle_get_blimp),
+                                web.get("/portal/api/blimp/events", portal.handle_blimp_events),
+                                web.post("/portal/api/blimp/stop", portal.handle_blimp_stop),
+                                web.post("/portal/api/blimp/pause", portal.handle_blimp_pause),
+                                web.post("/portal/api/blimp/resume", portal.handle_blimp_resume),
+                                web.post("/portal/api/blimp/loop", portal.handle_blimp_loop),
+                                web.post("/portal/api/blimp/answer", portal.handle_blimp_answer),
+                                web.post("/portal/api/blimp/decline", portal.handle_blimp_decline),
+                                web.post("/portal/api/blimp/end_call", portal.handle_blimp_end_call),
+                                web.get("/portal/api/{kind:audio|video}", portal.handle_list_media),
+                                web.post("/portal/api/{kind:audio|video}", portal.handle_upload_media),
+                                web.delete("/portal/api/{kind:audio|video}/{id}", portal.handle_delete_media),
+                                web.get("/portal/api/{kind:audio|video}/{id}/file", portal.handle_media_file),
+                                web.post("/portal/api/{kind:audio|video}/{id}/play", portal.handle_play_media),
+                                # Signed links for the Blimp; not behind the portal guard
+                                web.get("/blimp/{kind:audio|video}/{id}", portal.handle_blimp_media),
+                            ]
+                        )
                 # Add routes
                 app.add_routes(
                     [

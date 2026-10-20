@@ -86,6 +86,12 @@ async def checkWakeupWords(conn: "ConnectionHandler", text):
     if filtered_text not in conn.config.get("wakeup_words"):
         return False
 
+    await playWakeupResponse(conn)
+    return True
+
+
+async def playWakeupResponse(conn: "ConnectionHandler"):
+    """Play the cached wake greeting in the current TTS voice (regenerated in the background)."""
     conn.just_woken_up = True
     await send_tts_message(conn, "start")
 
@@ -123,7 +129,6 @@ async def checkWakeupWords(conn: "ConnectionHandler", text):
     if time.time() - response.get("time", 0) > WAKEUP_CONFIG["refresh_time"]:
         if not _wakeup_response_lock.locked():
             asyncio.create_task(wakeupWordsResponse(conn))
-    return True
 
 
 async def wakeupWordsResponse(conn: "ConnectionHandler"):

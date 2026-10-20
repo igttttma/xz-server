@@ -24,8 +24,9 @@ class TextMessageProcessor:
             if isinstance(msg_json, dict):
                 message_type = msg_json.get("type")
 
-                # Log the message
-                conn.logger.bind(tag=TAG).info(f"Received message of type {message_type}: {message}")
+                # Log the message (capped: MCP results can carry base64 photos)
+                logged = message if len(message) <= 1000 else f"{message[:1000]}... ({len(message)} chars)"
+                conn.logger.bind(tag=TAG).info(f"Received message of type {message_type}: {logged}")
 
                 # Get and execute the handler
                 handler = self.registry.get_handler(message_type)

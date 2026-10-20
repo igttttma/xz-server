@@ -67,6 +67,22 @@ tool_call_timeout: 30
 enable_wakeup_words_response_cache: true
 # Whether to reply to the wake word with a greeting
 enable_greeting: true
+# How to answer an explicit wake event (listen/detect with "wake": true, sent by
+# clients that detect the wake word locally): cached = play the pre-generated
+# greeting in the current TTS voice, none = no greeting, llm = let the LLM greet
+wake_greeting: cached
+# Interrupt (barge-in): the client keeps its microphone on while the AI speaks
+# (listen mode "realtime"); speech recognized during a reply cuts the reply and
+# starts a new turn. Sent to the Blimp over its control connection (when it
+# connects and when the portal saves it); applies the next time it starts
+# listening. Needs echo cancellation on the client, or the AI's own voice can
+# interrupt it.
+barge_in: false
+# Settings portal at http://127.0.0.1:<http_port>/portal/ (standalone mode only).
+# Open from this machine without a password; remote access needs this password
+# (HTTP Basic auth, any user name). Empty = local-only.
+portal:
+  password: ""
 # Whether to play a notification sound after speaking
 enable_stop_tts_notify: false
 # Notification sound played after speaking; audio file path

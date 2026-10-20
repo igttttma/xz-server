@@ -434,6 +434,10 @@ class TTSProviderBase(ABC):
                     enqueue_text, enqueue_audio = None, []
                     continue
 
+                # Audio of an earlier turn (an interrupted reply still arriving)
+                if sentence_id and sentence_id != self.conn.sentence_id:
+                    continue
+
                 # Report when the next text starts or the session ends
                 if sentence_type is not SentenceType.MIDDLE:
                     if self.report_on_last:

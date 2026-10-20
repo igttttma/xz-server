@@ -1,6 +1,7 @@
 """Device-side MCP client definition"""
 
 import asyncio
+import threading
 from concurrent.futures import Future
 from core.utils.util import sanitize_tool_name
 from config.logger import setup_logging
@@ -20,6 +21,9 @@ class MCPClient:
         self.next_id = 1
         self.lock = asyncio.Lock()
         self._cached_available_tools = None  # Cache for get_available_tools
+        # Set once the device's tool list is loaded into the function list;
+        # the first chat turn waits on it (it runs in a worker thread)
+        self.tools_loaded = threading.Event()
 
     def has_tool(self, name: str) -> bool:
         return name in self.tools

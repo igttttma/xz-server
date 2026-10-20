@@ -1,4 +1,5 @@
 import re
+import ipaddress
 import os
 import json
 import copy
@@ -123,24 +124,34 @@ def is_private_ip(ip_addr):
         return False  # IP address format error or insufficient segments
 
 
-def get_ip_info(ip_addr, logger):
+def get_ip_info(ip_addr, logger, test_ip=None):
+    """City, region, country and coordinates for an IP, in English (ipinfo.io).
+    Loopback clients use `test_ip` when set (local testing); other private IPs
+    resolve to this server's own public IP."""
     try:
-        # Import the global cache manager
         from core.utils.cache.manager import cache_manager, CacheType
 
-        # Try the cache first
+        try:
+            if test_ip and ip_addr and ipaddress.ip_address(ip_addr).is_loopback:
+                ip_addr = test_ip
+        except ValueError:
+            pass
+
         cached_ip_info = cache_manager.get(CacheType.IP_INFO, ip_addr)
         if cached_ip_info is not None:
             return cached_ip_info
 
-        # Cache miss; call the API
-        if is_private_ip(ip_addr):
-            ip_addr = ""
-        url = f"https://whois.pconline.com.cn/ipJson.jsp?json=true&ip={ip_addr}"
-        resp = requests.get(url).json()
-        ip_info = {"city": resp.get("city")}
-
-        # Store in the cache
+        lookup = "" if not ip_addr or is_private_ip(ip_addr) else ip_addr
+        url = f"https://ipinfo.io/{lookup}/json" if lookup else "https://ipinfo.io/json"
+        resp = requests.get(url, timeout=3).json()
+        lat, _, lon = (resp.get("loc") or "").partition(",")
+        ip_info = {
+            "city": resp.get("city"),
+            "region": resp.get("region"),
+            "country": resp.get("country"),
+            "lat": lat or None,
+            "lon": lon or None,
+        }
         cache_manager.set(CacheType.IP_INFO, ip_addr, ip_info)
         return ip_info
     except Exception as e:

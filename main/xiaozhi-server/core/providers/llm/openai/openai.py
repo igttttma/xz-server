@@ -1,3 +1,4 @@
+import time
 import httpx
 import openai
 from openai.types import CompletionUsage
@@ -159,10 +160,16 @@ class LLMProvider(LLMProviderBase):
         # Disable thinking mode
         self._apply_thinking_disabled(request_params)
 
+        started = time.monotonic()
         stream = self.client.chat.completions.create(**request_params)
+        logger.bind(tag=TAG).info(f"LLM stream opened in {time.monotonic() - started:.2f}s")
+        first_chunk = True
 
         try:
             for chunk in stream:
+                if first_chunk:
+                    first_chunk = False
+                    logger.bind(tag=TAG).info(f"LLM first chunk after {time.monotonic() - started:.2f}s")
                 if getattr(chunk, "choices", None):
                     delta = chunk.choices[0].delta
                     content = getattr(delta, "content", "")

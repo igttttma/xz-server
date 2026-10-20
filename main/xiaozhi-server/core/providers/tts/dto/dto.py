@@ -14,6 +14,7 @@ class ContentType(Enum):
     TEXT = "TEXT"  # Text content
     FILE = "FILE"  # File content
     ACTION = "ACTION"  # Action content
+    PAUSE = "PAUSE"  # The text stream pauses here (e.g. tool calls); streaming TTS may flush
 
 
 class InterfaceType(Enum):

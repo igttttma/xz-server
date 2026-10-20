@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from core.connection import ConnectionHandler
 from config.logger import setup_logging
 from jinja2 import Template
+from core.utils.util import get_ip_info
 
 TAG = __name__
 
@@ -70,6 +71,10 @@ class PromptManager:
 
         self.context_provider = ContextDataProvider(config, self.logger)
         self.context_data = {}
+        # Per-connection location and pre-fetched weather (see update_context_info)
+        self.local_address = ""
+        self.weather_location = None
+        self.weather_info = ""
 
         self._load_base_template()
 
@@ -141,110 +146,52 @@ class PromptManager:
 
         return today_date, today_weekday, lunar_date
 
-    def _get_location_info(self, client_ip: str) -> str:
-        """Get the location information"""
-        try:
-            # Try the cache first
-            cached_location = self.cache_manager.get(self.CacheType.LOCATION, client_ip)
-            if cached_location is not None:
-                return cached_location
-
-            # Cache miss; call the API
-            from core.utils.util import get_ip_info
-
-            ip_info = get_ip_info(client_ip, self.logger)
-            city = ip_info.get("city", "Unknown location")
-            location = f"{city}"
-
-            # Store in the cache
-            self.cache_manager.set(self.CacheType.LOCATION, client_ip, location)
-            return location
-        except Exception as e:
-            self.logger.bind(tag=TAG).error(f"Failed to get location information: {e}")
-            return "Unknown location"
-
-    def _get_weather_info(self, conn: "ConnectionHandler", location: str) -> str:
-        """Get the weather information"""
-        try:
-            # Try the cache first
-            cached_weather = self.cache_manager.get(self.CacheType.WEATHER, location)
-            if cached_weather is not None:
-                return cached_weather
-
-            # Cache miss; call the async get_weather function
-            # Windows ProactorEventLoop does not support run_coroutine_threadsafe().result(),
-            # so submit the task with call_soon_threadsafe and wait on a threading.Event.
-            # Note: Event.wait() only blocks the current thread-pool thread, not the main event loop.
-            from plugins_func.functions.get_weather import get_weather
-            from plugins_func.register import ActionResponse
-
-            result_holder = []
-            exception_holder = []
-
-            async def _call():
-                try:
-                    result_holder.append(
-                        await get_weather(conn, location=location, lang="zh_CN")
-                    )
-                except Exception as e:
-                    exception_holder.append(e)
-                finally:
-                    event.set()
-
-            event = threading.Event()
-            conn.loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_call()))
-            if not event.wait(timeout=10):
-                raise TimeoutError("Timed out getting weather information")
-            if exception_holder:
-                raise exception_holder[0]
-            result = result_holder[0]
-            if isinstance(result, ActionResponse):
-                weather_report = result.result
-                self.cache_manager.set(self.CacheType.WEATHER, location, weather_report)
-                return weather_report
-            return "Failed to get weather information"
-
-        except Exception as e:
-            self.logger.bind(tag=TAG).error(f"Failed to get weather information: {e}")
-            return "Failed to get weather information"
-
     def update_context_info(self, conn, client_ip: str):
-        """Synchronously update the context information"""
+        """Resolve the user's location from the client IP and pre-fetch its weather
+        (blocking; runs in the connection's worker thread before the first LLM call)."""
+        template = self.base_prompt_template or ""
         try:
-            local_address = ""
-            if (
-                client_ip
-                and self.base_prompt_template
-                and (
-                    "local_address" in self.base_prompt_template
-                    or "weather_info" in self.base_prompt_template
+            if "local_address" in template or "weather_info" in template:
+                info = get_ip_info(client_ip or "", self.logger, self.config.get("test_client_ip"))
+                self.local_address = ", ".join(
+                    part for part in (info.get("city"), info.get("region"), info.get("country")) if part
                 )
-            ):
-                # Get the location information (using the global cache)
-                local_address = self._get_location_info(client_ip)
+                if info.get("lat") and info.get("lon"):
+                    # QWeather takes "lon,lat" and returns the nearest city
+                    self.weather_location = f"{float(info['lon']):.2f},{float(info['lat']):.2f}"
+                else:
+                    self.weather_location = info.get("city") or None
 
-            if (
-                self.base_prompt_template
-                and "weather_info" in self.base_prompt_template
-                and local_address
-            ):
-                # Get the weather information (using the global cache)
-                self._get_weather_info(conn, local_address)
+            if "weather_info" in template:
+                self.weather_info = self._prefetch_weather(conn)
 
             # Get the configured context data
             if hasattr(conn, "device_id") and conn.device_id:
-                if (
-                    self.base_prompt_template
-                    and "dynamic_context" in self.base_prompt_template
-                ):
+                if "dynamic_context" in template:
                     self.context_data = self.context_provider.fetch_all(conn.device_id)
                 else:
                     self.context_data = ""
 
-            self.logger.bind(tag=TAG).debug(f"Context information updated")
-
+            self.logger.bind(tag=TAG).info(
+                f"Context: location '{self.local_address or 'unknown'}', weather "
+                f"{'pre-fetched' if self.weather_info and not self.weather_info.startswith('Unavailable') else 'unavailable'}"
+            )
         except Exception as e:
             self.logger.bind(tag=TAG).error(f"Failed to update context information: {e}")
+
+    def _prefetch_weather(self, conn) -> str:
+        from plugins_func.functions.get_weather import fetch_weather_report, WeatherUnavailable
+
+        weather_config = self.config.get("plugins", {}).get("get_weather", {})
+        location = self.weather_location or weather_config.get("default_location", "")
+        try:
+            # This runs in a worker thread, so a private event loop is fine here
+            return asyncio.run(fetch_weather_report(weather_config, location))
+        except WeatherUnavailable as e:
+            return f"Unavailable ({e}) Call get_weather if the user asks about the weather."
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"Weather pre-fetch failed: {e}")
+            return "Unavailable. Call get_weather if the user asks about the weather."
 
     def build_enhanced_prompt(
         self, user_prompt: str, device_id: str, client_ip: str = None, *args, **kwargs
@@ -257,22 +204,9 @@ class PromptManager:
             # Get the latest time information (not cached)
             today_date, today_weekday, lunar_date = self._get_current_time_info()
 
-            # Get the cached context information
-            local_address = ""
-            weather_info = ""
-
-            if client_ip:
-                # Get the location information (from the global cache)
-                local_address = (
-                    self.cache_manager.get(self.CacheType.LOCATION, client_ip) or ""
-                )
-
-                # Get the weather information (from the global cache)
-                if local_address:
-                    weather_info = (
-                        self.cache_manager.get(self.CacheType.WEATHER, local_address)
-                        or ""
-                    )
+            # Resolved by update_context_info for this connection
+            local_address = self.local_address or "unknown"
+            weather_info = self.weather_info or "Unavailable. Call get_weather if the user asks about the weather."
 
             # Get the language selected by TTS, defaulting to English
             language = (

@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 import websockets
+from urllib.parse import urlparse
 from config.logger import setup_logging
 
 
@@ -33,6 +34,7 @@ _setup_websockets_logger()
 from core.connection import ConnectionHandler
 from config.config_loader import get_config_from_api_async
 from core.auth import AuthManager, AuthenticationError
+from core.blimp_control import BlimpControl
 from core.utils.modules_initialize import initialize_modules
 from core.utils.util import check_vad_update, check_asr_update
 
@@ -44,6 +46,10 @@ class WebSocketServer:
         self.config = config
         self.logger = setup_logging(config)
         self.config_lock = asyncio.Lock()
+        # device-id -> live ConnectionHandler (used to attach photos to a conversation)
+        self.active_connections = {}
+        # The Blimp's always-on control socket (online status, portal commands)
+        self.blimp_control = BlimpControl(config)
         modules = initialize_modules(
             self.logger,
             self.config,
@@ -86,7 +92,7 @@ class WebSocketServer:
         headers = dict(websocket.request.headers)
         if headers.get("device-id", None) is None:
             # Try to obtain device-id from the URL query parameters
-            from urllib.parse import parse_qs, urlparse
+            from urllib.parse import parse_qs
 
             # Get the path from the WebSocket request
             request_path = websocket.request.path
@@ -117,6 +123,10 @@ class WebSocketServer:
             await websocket.send("Authentication failed")
             await websocket.close()
             return
+        device_id = websocket.request.headers.get("device-id")
+        if urlparse(websocket.request.path).path.rstrip("/").endswith("/control"):
+            await self.blimp_control.handle(websocket, device_id)
+            return
         # Pass the current server instance when creating the ConnectionHandler
         handler = ConnectionHandler(
             self.config,
@@ -127,11 +137,14 @@ class WebSocketServer:
             self._intent,
             self,  # pass in the server instance
         )
+        self.active_connections[device_id] = handler
         try:
             await handler.handle_connection(websocket)
         except Exception as e:
             self.logger.bind(tag=TAG).error(f"Error while handling connection: {e}")
         finally:
+            if self.active_connections.get(device_id) is handler:
+                del self.active_connections[device_id]
             # Force close the connection (if not already closed)
             try:
                 # Safely check the WebSocket state and close it
@@ -205,6 +218,54 @@ class WebSocketServer:
                 return True
         except Exception as e:
             self.logger.bind(tag=TAG).error(f"Failed to update the server configuration: {str(e)}")
+            return False
+
+    async def reload_local_config(self) -> bool:
+        """Re-read config.yaml + data/.config.yaml (standalone mode) and re-initialize
+        the shared modules whose config changed. Applies to new connections.
+        """
+        from config.config_loader import load_config
+        from core.utils.cache.manager import cache_manager, CacheType
+
+        try:
+            async with self.config_lock:
+                cache_manager.delete(CacheType.CONFIG, "main_config")
+                new_config = await load_config()
+                # Keep the runtime auth key generated at startup
+                new_config["server"]["auth_key"] = self.config["server"]["auth_key"]
+
+                def changed(module):
+                    old_sel = self.config["selected_module"].get(module)
+                    new_sel = new_config["selected_module"].get(module)
+                    return old_sel != new_sel or self.config.get(module, {}).get(
+                        old_sel
+                    ) != new_config.get(module, {}).get(new_sel)
+
+                modules = initialize_modules(
+                    self.logger,
+                    new_config,
+                    False,
+                    "ASR" in new_config["selected_module"] and changed("ASR"),
+                    "LLM" in new_config["selected_module"],
+                    False,
+                    "Memory" in new_config["selected_module"],
+                    "Intent" in new_config["selected_module"],
+                )
+                if "asr" in modules:
+                    self._asr = modules["asr"]
+                if "llm" in modules:
+                    self._llm = modules["llm"]
+                if "intent" in modules:
+                    self._intent = modules["intent"]
+                if "memory" in modules:
+                    self._memory = modules["memory"]
+                # Update in place: the HTTP handlers share this dict
+                self.config.clear()
+                self.config.update(new_config)
+                self.logger.bind(tag=TAG).info("Local configuration reloaded")
+                return True
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"Failed to reload the local configuration: {str(e)}")
             return False
 
     async def _handle_auth(self, websocket: websockets.ServerConnection):

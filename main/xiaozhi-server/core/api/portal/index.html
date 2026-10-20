@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Server Portal</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #6b7385; --line: #e2e5eb;
+    --accent: #3b6cf6; --accent-text: #fff; --ok: #1f8a4c; --err: #c23b3b; --field: #fff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161b; --card: #1c1f26; --text: #e6e8ee; --muted: #9aa1b2; --line: #2c313b;
+      --accent: #6b8fff; --accent-text: #0d1020; --ok: #4cc27f; --err: #ff7b7b; --field: #15181e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 96px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  label { display: block; font-weight: 600; margin: 12px 0 4px; }
+  label:first-of-type { margin-top: 0; }
+  .hint { color: var(--muted); font-size: 12px; font-weight: 400; margin-top: 4px; }
+  input[type=text], input[type=password], input[type=number], select, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--field); color: var(--text); font: inherit;
+  }
+  textarea { min-height: 220px; resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+  .switch { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .switch:first-child { border-top: 0; }
+  .switch.barge { margin-top: 14px; }
+  .switch input { margin-top: 3px; }
+  .switch b { display: block; font-family: ui-monospace, Consolas, monospace; font-weight: 600; }
+  .switch span { color: var(--muted); font-size: 12px; }
+  .mem { border-top: 1px solid var(--line); padding: 10px 0; }
+  .mem header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .mem code { font-size: 12px; color: var(--muted); }
+  .mem pre { white-space: pre-wrap; margin: 6px 0 0; font-size: 12px; }
+  button { font: inherit; border-radius: 6px; padding: 8px 14px; border: 1px solid var(--line); background: var(--field); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button.small { padding: 3px 10px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line); }
+  .bar div { max-width: 760px; margin: 0 auto; padding: 12px 16px; display: flex; align-items: center; gap: 12px; }
+  #status { flex: 1; color: var(--muted); }
+  #status.ok { color: var(--ok); } #status.err { color: var(--err); }
+  .empty { color: var(--muted); }
+  .live { display: flex; align-items: center; gap: 12px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 20%, transparent); }
+  .live b { font-size: 16px; }
+  .live .meta { color: var(--muted); font-size: 12px; }
+  .live > div { flex: 1; min-width: 0; }
+  .player-head { display: flex; align-items: center; gap: 12px; }
+  .player-head > div { flex: 1; min-width: 0; }
+  .player-head b { display: block; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .player-head .meta { color: var(--muted); font-size: 12px; }
+  .player-head .meta.err { color: var(--err); }
+  .kind { flex: none; font-size: 11px; font-weight: 700; letter-spacing: .06em; padding: 3px 8px; border-radius: 999px;
+    background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+  .kind.on { color: var(--accent); border-color: var(--accent); }
+  .progress { height: 6px; margin: 14px 0 6px; border-radius: 3px; background: var(--bg); overflow: hidden; }
+  .progress i { display: block; height: 100%; width: 0; background: var(--accent); }
+  .progress.paused i { background: var(--muted); }
+  .times { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .player-controls { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .player-controls button { min-width: 92px; }
+  #np_stop:not(:disabled) { background: var(--err); border-color: var(--err); color: #fff; font-weight: 600; }
+  label.loop { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 0 auto; font-weight: 600; cursor: pointer; }
+  label.loop input { margin: 0; width: 16px; height: 16px; }
+  label.loop:has(input:disabled) { color: var(--muted); cursor: default; }
+  .calls { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  #decline_call:not(:disabled), #end_call:not(:disabled) { background: var(--err); border-color: var(--err); color: #fff; font-weight: 600; }
+  #answer_call:not(:disabled) { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 600; animation: ring 1s ease-in-out infinite alternate; }
+  @keyframes ring { to { box-shadow: 0 0 0 6px color-mix(in srgb, var(--ok) 25%, transparent); } }
+  @media (prefers-reduced-motion: reduce) { #answer_call { animation: none !important; } }
+  .blocked { margin-top: 10px; color: var(--err); font-size: 12px; }
+  .upload { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px; border: 1px dashed var(--line); border-radius: 8px; }
+  .upload input[type=file] { flex: 1; min-width: 0; }
+  .table { overflow-x: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-top: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
+  thead th { border-top: 0; background: var(--bg); color: var(--muted); font-weight: 600; font-size: 12px; }
+  td.title { white-space: normal; min-width: 140px; font-weight: 600; word-break: break-word; }
+  td.num { color: var(--muted); font-variant-numeric: tabular-nums; }
+  td audio { width: 190px; height: 32px; display: block; }
+  td video { width: 112px; height: 63px; display: block; background: #000; border-radius: 6px; }
+  td.cache { font-size: 12px; }
+  td.cache.cached { color: var(--ok); }
+  td.cache.failed { color: var(--err); white-space: normal; min-width: 110px; }
+  td.cache.loading { color: var(--muted); }
+  .bar { display: block; width: 90px; height: 4px; margin-top: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); }
+  td.title small { display: block; color: var(--muted); font-weight: 400; font-size: 11px; }
+  td.actions { text-align: right; }
+  td.actions button + button { margin-left: 6px; }
+  tr.playing td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  tr.playing td.title b::after { content: "  ▶ playing"; color: var(--accent); font-size: 12px; }
+  .hint.ok { color: var(--ok); } .hint.err { color: var(--err); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Server portal</h1>
+  <p class="sub">Live Blimp status, audio and video, then server settings. Settings are saved to <code>data/.config.yaml</code> and apply to new connections; reconnect the client after saving.</p>
+
+  <section>
+    <h2>Blimp</h2>
+    <div class="live">
+      <i class="dot" id="blimp_dot"></i>
+      <div><b id="blimp_title">Connecting to the server…</b><div class="meta" id="blimp_meta"></div></div>
+      <div class="calls">
+        <button id="answer_call" disabled title="Only while the Blimp is ringing (fallback for the spoken “answer”)">Answer</button>
+        <button id="decline_call" disabled title="Only while the Blimp is ringing">Decline</button>
+        <button id="end_call" disabled title="Only while the Blimp is calling or in a call">End call</button>
+      </div>
+    </div>
+    <div class="blocked" id="blocked" hidden></div>
+  </section>
+
+  <section>
+    <h2>Now playing</h2>
+    <div class="player-head">
+      <span class="kind" id="np_kind">IDLE</span>
+      <div><b id="np_title">Nothing playing</b><div class="meta" id="np_meta">Press Play now on a clip below.</div></div>
+    </div>
+    <div class="progress" id="np_progress"><i id="np_bar"></i></div>
+    <div class="times"><span id="np_pos">0:00</span><span id="np_dur">0:00</span></div>
+    <div class="player-controls">
+      <button id="np_pause" disabled>Pause</button>
+      <button id="np_stop" disabled>Stop</button>
+      <label class="loop" title="Repeat the clip; also applies to the next clips you play"><input type="checkbox" id="np_loop" disabled> Loop</label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Audio server</h2>
+    <form class="upload" id="audio_upload">
+      <input id="audio_files" type="file" multiple accept=".mp3,.wav,.ogg,.oga,.opus,.m4a,.aac,.flac,.webm,audio/*" required>
+      <button class="primary">Upload</button>
+    </form>
+    <div class="hint" id="audio_status">Select one or more files: MP3, WAV, OGG, Opus, M4A, AAC, FLAC or WebM, up to 50 MB each. Stored in data/audio/.</div>
+    <div class="table">
+      <table>
+        <thead><tr><th>#</th><th>Title</th><th>Length</th><th>Size</th><th>Listen</th><th></th></tr></thead>
+        <tbody id="audio_clips"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Video server</h2>
+    <form class="upload" id="video_upload">
+      <input id="video_files" type="file" multiple accept=".mp4,.m4v,.webm,video/mp4,video/webm" required>
+      <button class="primary">Upload</button>
+    </form>
+    <div class="hint" id="video_status">Select one or more files: MP4 (H.264/AAC) or WebM (VP8/VP9), up to 500 MB each. Stored in data/video/. The Blimp downloads every video in the background, so Play now starts at once.</div>
+    <div class="table">
+      <table>
+        <thead><tr><th>#</th><th>Title</th><th>Length</th><th>Size</th><th>On Blimp</th><th>Preview</th><th></th></tr></thead>
+        <tbody id="video_clips"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Platform</h2>
+    <label for="api_key">API key</label>
+    <input id="api_key" type="password" autocomplete="off" placeholder="unchanged">
+    <div class="hint" id="key_hint"></div>
+    <div class="row" style="margin-top:12px">
+      <div>
+        <label for="asr_model">ASR model</label>
+        <input id="asr_model" type="text">
+        <div class="hint" data-provider="ASR"></div>
+      </div>
+      <div>
+        <label for="llm_model">LLM model</label>
+        <input id="llm_model" type="text">
+        <div class="hint" data-provider="LLM"></div>
+        <div class="hint">Also answers image input, so it must be multimodal.</div>
+      </div>
+      <div>
+        <label for="tts_model">TTS model</label>
+        <input id="tts_model" type="text">
+        <div class="hint" data-provider="TTS"></div>
+      </div>
+      <div>
+        <label for="voice">TTS voice</label>
+        <input id="voice" type="text">
+        <div class="hint">Must be a voice the TTS model supports.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Persona</h2>
+    <label for="prompt">System prompt</label>
+    <textarea id="prompt" spellcheck="false"></textarea>
+    <div class="hint">The server adds time, location, weather and tool rules around this (agent-base-prompt.txt).</div>
+  </section>
+
+  <section>
+    <h2>Conversation</h2>
+    <div class="row">
+      <div>
+        <label for="wake_greeting">Wake greeting</label>
+        <select id="wake_greeting">
+          <option value="cached">Cached greeting (instant, current voice)</option>
+          <option value="none">None, just listen</option>
+          <option value="llm">LLM greeting</option>
+        </select>
+      </div>
+      <div>
+        <label for="max_tokens">Reply length (max tokens)</label>
+        <input id="max_tokens" type="number" min="50" max="8000" step="50">
+      </div>
+    </div>
+    <label for="idle_timeout">Idle timeout (seconds)</label>
+    <input id="idle_timeout" type="number" min="10" max="3600" step="10">
+    <div class="hint">After this long without speech the server says goodbye and disconnects.</div>
+    <div class="switch barge">
+      <input id="barge_in" type="checkbox">
+      <div><b style="font-family:inherit">Allow interrupting the AI</b>
+        <span>The Blimp keeps listening while the AI speaks; when you say something, the AI stops and answers that instead. Applies from the next conversation (after the next “Hey Blimp”). Relies on the Blimp's echo cancellation: if the AI interrupts itself, turn this off.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Tools</h2>
+    <div id="tools"></div>
+  </section>
+
+  <section>
+    <h2>Memory</h2>
+    <div class="switch">
+      <input id="memory_enabled" type="checkbox">
+      <div><b style="font-family:inherit">Remember across sessions</b>
+        <span>At the end of each session the LLM summarizes it; the summary is added to the next session's prompt. Stored locally in data/.memory.yaml.</span></div>
+    </div>
+    <div id="memory"></div>
+  </section>
+</main>
+
+<div class="bar"><div>
+  <span id="status"></span>
+  <button id="reset">Discard</button>
+  <button id="save" class="primary">Save</button>
+</div></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const FIELDS = ["asr_model", "llm_model", "tts_model", "voice", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "memory_enabled"];
+let loaded = null;
+
+function setStatus(text, kind = "") { const s = $("status"); s.textContent = text; s.className = kind; }
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { ...options, headers: { "X-Portal": "1", "Content-Type": "application/json", ...(options.headers || {}) } });
+  const data = res.headers.get("content-type")?.includes("json") ? await res.json() : { error: await res.text() };
+  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { data });
+  return data;
+}
+
+function render(s) {
+  loaded = s;
+  $("api_key").value = "";
+  $("key_hint").textContent = (s.api_key ? `Current: ${s.api_key}. ` : "Not set. ") + `Shared by ${s.key_modules.join(", ")}.`;
+  for (const el of document.querySelectorAll("[data-provider]")) {
+    const provider = s.providers[el.dataset.provider];
+    el.textContent = provider || "not selected";
+    document.getElementById(`${el.dataset.provider.toLowerCase()}_model`).disabled = !provider;
+  }
+  for (const f of FIELDS) {
+    const el = $(f);
+    if (el.type === "checkbox") el.checked = !!s[f]; else el.value = s[f] ?? "";
+  }
+  const tools = $("tools");
+  tools.innerHTML = "";
+  if (!s.tools_supported) tools.innerHTML = '<p class="empty">The selected intent mode has no tool list.</p>';
+  for (const t of s.tools) {
+    const row = document.createElement("label");
+    row.className = "switch";
+    row.style.fontWeight = "400";
+    row.innerHTML = `<input type="checkbox" data-tool><div><b></b><span></span></div>`;
+    row.querySelector("input").dataset.tool = t.name;
+    row.querySelector("input").checked = t.enabled;
+    row.querySelector("b").textContent = t.name;
+    row.querySelector("span").textContent = t.description;
+    tools.appendChild(row);
+  }
+  updateDirty();
+}
+
+function changes() {
+  if (!loaded) return {};
+  const out = {};
+  if ($("api_key").value.trim()) out.api_key = $("api_key").value.trim();
+  for (const f of FIELDS) {
+    const el = $(f);
+    let v = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value;
+    let old = loaded[f];
+    if (f === "prompt") { v = v.trim(); old = String(old).trim(); }
+    if (v !== old) out[f] = v;
+  }
+  const tools = [...document.querySelectorAll("[data-tool]")].filter((c) => c.checked).map((c) => c.dataset.tool);
+  const oldTools = loaded.tools.filter((t) => t.enabled).map((t) => t.name);
+  if (tools.join() !== oldTools.join()) out.tools = tools;
+  return out;
+}
+
+function updateDirty() {
+  const n = Object.keys(changes()).length;
+  $("save").disabled = $("reset").disabled = n === 0;
+  if (n) setStatus(`${n} unsaved change${n > 1 ? "s" : ""}`);
+  else if (!$("status").className) setStatus("");
+}
+
+async function loadMemory() {
+  const box = $("memory");
+  try {
+    const { entries } = await api("/portal/api/memory");
+    box.innerHTML = "";
+    if (!entries.length) { box.innerHTML = '<p class="empty">No saved summaries.</p>'; return; }
+    for (const e of entries) {
+      const div = document.createElement("div");
+      div.className = "mem";
+      div.innerHTML = `<header><code></code><button class="small">Clear</button></header><pre></pre>`;
+      div.querySelector("code").textContent = `Device ${e.device}`;
+      div.querySelector("pre").textContent = e.summary;
+      div.querySelector("button").onclick = async () => {
+        if (!confirm(`Clear the memory of device ${e.device}?`)) return;
+        await api(`/portal/api/memory?device=${encodeURIComponent(e.device)}`, { method: "DELETE" });
+        loadMemory();
+      };
+      box.appendChild(div);
+    }
+  } catch (err) { box.innerHTML = ""; box.textContent = `Could not load memory: ${err.message}`; }
+}
+
+$("save").onclick = async () => {
+  const body = changes();
+  $("save").disabled = true;
+  setStatus("Saving…");
+  try {
+    const res = await api("/portal/api/settings", { method: "POST", body: JSON.stringify(body) });
+    render(res.settings);
+    setStatus("Saved. Reconnect the client to use the new settings.", "ok");
+  } catch (err) {
+    if (err.data?.settings) render(err.data.settings);
+    setStatus(err.message, "err");
+    updateDirty();
+  }
+};
+$("reset").onclick = () => { setStatus(""); render(loaded); };
+document.addEventListener("input", () => { $("status").className = ""; updateDirty(); });
+document.addEventListener("change", () => { $("status").className = ""; updateDirty(); });
+
+api("/portal/api/settings").then(render).catch((err) => setStatus(`Could not load settings: ${err.message}`, "err"));
+loadMemory();
+
+// ---------- Blimp (live) ----------
+let blimp = { online: false, state: {} };
+let clockSkew = 0; // server time - browser time, seconds
+const ACTIVITY = {
+  idle: (s) => s.wake === false ? "Idle" : "Idle, waiting for “Hey Blimp”",
+  conversation: (s) => `In a conversation${s.conversation && s.conversation !== "idle" ? ` (${s.conversation})` : ""}`,
+  ringing: () => "Incoming video call",
+  calling: () => "Calling the remote user",
+  in_call: () => "In a video call",
+  playing: (s) => s.playback?.status === "paused"
+    ? `${s.playback?.kind === "video" ? "Video" : "Audio"} paused`
+    : `Playing ${s.playback?.kind === "video" ? "a video" : "audio"}`
+};
+const ENDED = { ended: "Finished", stopped: "Stopped", failed: "Could not play" };
+const fmtTime = (sec) => {
+  sec = Math.max(0, Math.floor(sec || 0));
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+};
+const ago = (t) => {
+  const s = Math.max(0, Date.now() / 1000 + clockSkew - t);
+  return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ago`;
+};
+
+function playbackPosition(p) {
+  if (p.status !== "playing") return p.position || 0;
+  const elapsed = Date.now() / 1000 + clockSkew - (blimp.state_at || 0);
+  const pos = (p.position || 0) + elapsed;
+  if (!p.duration) return pos;
+  return blimp.state?.loop ? pos % p.duration : Math.min(pos, p.duration);
+}
+
+function renderBlimp() {
+  const s = blimp.state || {};
+  $("blimp_dot").className = `dot${blimp.online ? " on" : ""}`;
+  $("blimp_title").textContent = blimp.online ? (ACTIVITY[s.activity] || ACTIVITY.idle)(s) : "Blimp is offline";
+  $("blimp_meta").textContent = blimp.online
+    ? `Online · device ${blimp.device_id} · connected ${ago(blimp.connected_at)}`
+    : "Start the Blimp client; it connects to this server on its own.";
+  const p = blimp.online ? s.playback : null;
+  renderPlayer(p);
+  const blocked = blimp.blocked || [];
+  $("answer_call").disabled = $("decline_call").disabled = !(blimp.online && s.call === "ringing");
+  $("end_call").disabled = !(blimp.online && (s.call === "calling" || s.call === "in_call"));
+  $("blocked").hidden = !blocked.length;
+  $("blocked").textContent = blocked.length
+    ? `Blocked (only one Blimp per server): ${blocked.map((b) => `${b.device_id}, ${ago(b.at)}`).join("; ")}`
+    : "";
+  for (const btn of document.querySelectorAll("[data-play]")) btn.disabled = !blimp.online;
+  for (const row of document.querySelectorAll(".clip")) {
+    row.classList.toggle("playing", !!p && p.id === row.dataset.id && ["playing", "loading", "paused"].includes(p.status));
+  }
+  renderCache();
+}
+
+// The "Now playing" panel
+function renderPlayer(p) {
+  const live = !!p && ["playing", "loading", "paused"].includes(p.status);
+  $("np_kind").textContent = p ? (p.kind === "video" ? "VIDEO" : "AUDIO") : blimp.online ? "IDLE" : "OFFLINE";
+  $("np_kind").className = `kind${live ? " on" : ""}`;
+  $("np_title").textContent = p ? p.title : "Nothing playing";
+  const meta = $("np_meta");
+  meta.className = `meta${p?.status === "failed" ? " err" : ""}`;
+  if (!blimp.online) meta.textContent = "The Blimp is offline.";
+  else if (!p) meta.textContent = "Press Play now on a clip below.";
+  else if (live) {
+    const where = p.kind === "video" ? (p.source === "cache" ? " · from the Blimp's cache" : " · streaming") : "";
+    meta.textContent = `${{ loading: "Loading…", playing: "Playing", paused: "Paused" }[p.status]}${where}${s_loop() ? " · looping" : ""}`;
+  } else {
+    const why = p.status === "stopped" && p.reason ? ` (${p.reason})` : p.status === "failed" && p.error ? `: ${p.error}` : "";
+    meta.textContent = `${ENDED[p.status] || p.status}${why}`;
+  }
+  const pos = p ? (live ? playbackPosition(p) : p.status === "ended" ? p.duration || 0 : p.position || 0) : 0;
+  const dur = p?.duration || 0;
+  $("np_pos").textContent = fmtTime(pos);
+  $("np_dur").textContent = fmtTime(dur);
+  $("np_bar").style.width = dur ? `${Math.min(100, (100 * pos) / dur)}%` : "0";
+  $("np_progress").className = `progress${p?.status === "paused" ? " paused" : ""}`;
+  const pause = $("np_pause");
+  pause.textContent = p?.status === "paused" ? "Resume" : "Pause";
+  pause.disabled = !(p && (p.status === "playing" || p.status === "paused"));
+  $("np_stop").disabled = !live;
+  $("np_loop").disabled = !blimp.online;
+  // While a toggle is on its way, keep the box as clicked
+  if (!loopPending) $("np_loop").checked = s_loop();
+}
+const s_loop = () => !!(blimp.online && blimp.state?.loop);
+let loopPending = false;
+
+// The Blimp's copy of each video (it prefetches them all)
+function renderCache() {
+  const cache = blimp.online ? blimp.state?.videos || {} : null;
+  const pctOf = (c) => c.size ? Math.floor((100 * c.received) / c.size) : 0;
+  for (const cell of document.querySelectorAll("td.cache")) {
+    const c = cache?.[cell.dataset.id];
+    let text, kind = "loading", pct = null;
+    if (!cache) text = "Blimp offline";
+    else if (!c) text = "Waiting for the Blimp";
+    else if (c.state === "cached") { text = "✓ Cached"; kind = "cached"; }
+    else if (c.state === "downloading") { pct = pctOf(c); text = `Downloading ${pct}%`; }
+    else if (c.state === "failed") { text = `Failed: ${c.error || "error"}${c.received ? ` (${pctOf(c)}% kept)` : ""}`; kind = "failed"; }
+    else text = c.received ? `Queued (${pctOf(c)}%)` : "Queued";
+    cell.className = `cache ${kind}`;
+    cell.textContent = text;
+    if (pct !== null) cell.insertAdjacentHTML("beforeend", `<span class="bar"><i style="width:${pct}%"></i></span>`);
+  }
+}
+
+function watchBlimp() {
+  const events = new EventSource("/portal/api/blimp/events");
+  events.onmessage = (e) => {
+    blimp = JSON.parse(e.data);
+    clockSkew = blimp.now - Date.now() / 1000;
+    renderBlimp();
+  };
+  events.onerror = () => {
+    if (events.readyState === EventSource.CLOSED) setTimeout(watchBlimp, 3000);
+    blimp = { online: false, state: {} };
+    renderBlimp();
+    $("blimp_title").textContent = "Server unreachable, retrying…";
+  };
+}
+// Between Blimp reports the player clock runs locally
+setInterval(() => blimp.online && blimp.state?.playback?.status === "playing" && renderPlayer(blimp.state.playback), 250);
+
+const CALL_BUTTONS = { answer_call: ["answer", "Answering"], decline_call: ["decline", "Declining"], end_call: ["end_call", "Ending"] };
+for (const [id, [route, doing]] of Object.entries(CALL_BUTTONS)) {
+  $(id).onclick = async () => {
+    try {
+      const res = await api(`/portal/api/blimp/${route}`, { method: "POST" });
+      setStatus(res.done ? `${doing} the call on the Blimp` : res.message || "", res.done ? "ok" : "");
+    } catch (err) { setStatus(err.message, "err"); }
+  };
+}
+
+$("np_stop").onclick = async () => {
+  try { await api("/portal/api/blimp/stop", { method: "POST" }); }
+  catch (err) { setStatus(err.message, "err"); }
+};
+$("np_pause").onclick = async () => {
+  const paused = blimp.state?.playback?.status === "paused";
+  try {
+    const res = await api(`/portal/api/blimp/${paused ? "resume" : "pause"}`, { method: "POST" });
+    if (!res.done && res.message) setStatus(res.message);
+  } catch (err) { setStatus(err.message, "err"); }
+};
+$("np_loop").onchange = async (e) => {
+  loopPending = true;
+  try { await api("/portal/api/blimp/loop", { method: "POST", body: JSON.stringify({ loop: e.target.checked }) }); }
+  catch (err) { setStatus(err.message, "err"); e.target.checked = s_loop(); }
+  loopPending = false;
+};
+
+// ---------- audio and video servers ----------
+const fmtSize = (n) => n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
+
+function mediaServer(kind) {
+  const video = kind === "video";
+  const status = (text, cls = "") => { $(`${kind}_status`).textContent = text; $(`${kind}_status`).className = `hint ${cls}`; };
+
+  async function load() {
+    const body = $(`${kind}_clips`);
+    try {
+      const { clips } = await api(`/portal/api/${kind}`);
+      body.innerHTML = "";
+      if (!clips.length) { body.innerHTML = `<tr><td colspan="${video ? 7 : 6}" class="empty">No ${kind} uploaded yet.</td></tr>`; return; }
+      clips.forEach((c, i) => {
+        const row = document.createElement("tr");
+        row.className = "clip";
+        row.dataset.id = c.id;
+        row.innerHTML = `<td class="num"></td><td class="title"><b></b><small></small></td><td class="num">…</td><td class="num"></td>
+          ${video ? `<td class="cache"></td><td><video controls preload="metadata" playsinline></video></td>` : `<td><audio controls preload="metadata"></audio></td>`}
+          <td class="actions"><button type="button" class="small primary" data-play>Play now</button><button type="button" class="small" data-delete>Delete</button></td>`;
+        const cells = row.querySelectorAll("td");
+        cells[0].textContent = i + 1;
+        cells[1].querySelector("b").textContent = c.title;
+        cells[1].querySelector("small").textContent = `Uploaded ${new Date(c.uploaded_at * 1000).toLocaleString()}`;
+        cells[3].textContent = fmtSize(c.size);
+        if (video) cells[4].dataset.id = c.id;
+        const player = row.querySelector("audio, video");
+        player.src = `/portal/api/${kind}/${c.id}/file`;
+        player.onloadedmetadata = () => { cells[2].textContent = fmtTime(player.duration); };
+        row.querySelector("[data-play]").onclick = async (e) => {
+          e.target.disabled = true;
+          try {
+            await api(`/portal/api/${kind}/${c.id}/play`, { method: "POST" });
+            status(`Sent “${c.title}” to the Blimp.`, "ok");
+          } catch (err) { status(err.message, "err"); }
+          e.target.disabled = !blimp.online;
+        };
+        row.querySelector("[data-delete]").onclick = async () => {
+          if (!confirm(`Delete “${c.title}”?`)) return;
+          try { await api(`/portal/api/${kind}/${c.id}`, { method: "DELETE" }); }
+          catch (err) { status(err.message, "err"); }
+          load();
+        };
+        body.appendChild(row);
+      });
+      renderBlimp();
+    } catch (err) { body.innerHTML = ""; status(`Could not load ${kind}: ${err.message}`, "err"); }
+  }
+
+  const formEl = $(`${kind}_upload`);
+  formEl.onsubmit = async (e) => {
+    e.preventDefault();
+    const files = [...$(`${kind}_files`).files];
+    if (!files.length) return;
+    const form = new FormData();
+    for (const f of files) form.append("file", f);
+    const button = formEl.querySelector("button");
+    button.disabled = true;
+    const what = `${files.length} file${files.length > 1 ? "s" : ""}`;
+    // XHR for upload progress (videos are large)
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/portal/api/${kind}`);
+    xhr.setRequestHeader("X-Portal", "1");
+    xhr.responseType = "json";
+    xhr.upload.onprogress = (ev) => ev.lengthComputable && status(`Uploading ${what}… ${Math.floor((100 * ev.loaded) / ev.total)}%`);
+    status(`Uploading ${what}…`);
+    try {
+      const data = await new Promise((resolve, reject) => {
+        xhr.onload = () => {
+          const res = xhr.response || {};
+          if (xhr.status >= 200 && xhr.status < 300) resolve(res);
+          else reject(new Error(res.error || xhr.statusText || `HTTP ${xhr.status}`));
+        };
+        xhr.onerror = () => reject(new Error("network error"));
+        xhr.send(form);
+      });
+      formEl.reset();
+      const done = `Uploaded ${data.clips.length} file${data.clips.length > 1 ? "s" : ""}.${video ? " The Blimp is downloading them." : ""}`;
+      status(data.errors.length ? `${done} Skipped: ${data.errors.join("; ")}` : done, data.errors.length ? "err" : "ok");
+      load();
+    } catch (err) {
+      status(`Upload failed: ${err.message}`, "err");
+    }
+    button.disabled = false;
+  };
+  load();
+}
+
+watchBlimp();
+mediaServer("audio");
+mediaServer("video");
+</script>
+</body>
+</html>

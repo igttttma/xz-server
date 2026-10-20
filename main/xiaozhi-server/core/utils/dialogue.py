@@ -13,6 +13,7 @@ class Message:
             tool_calls=None,
             tool_call_id=None,
             is_temporary=False,
+            images=None,
     ):
         self.uniq_id = uniq_id if uniq_id is not None else str(uuid.uuid4())
         self.role = role
@@ -20,6 +21,8 @@ class Message:
         self.tool_calls = tool_calls
         self.tool_call_id = tool_call_id
         self.is_temporary = is_temporary  # marks a temporary message (e.g. a tool call notice)
+        # Image data URLs for multimodal LLMs; content stays plain text for everything else
+        self.images = images
 
 
 class Dialogue:
@@ -31,8 +34,16 @@ class Dialogue:
     def put(self, message: Message):
         self.dialogue.append(message)
 
-    def getMessages(self, m, dialogue):
-        if m.tool_calls is not None:
+    def getMessages(self, m, dialogue, latest_image_id=None):
+        if m.images:
+            if m.uniq_id == latest_image_id:
+                parts = [{"type": "text", "text": m.content or ""}]
+                parts += [{"type": "image_url", "image_url": {"url": url}} for url in m.images]
+                dialogue.append({"role": m.role, "content": parts})
+            else:
+                # Older photos are not re-sent, to keep requests small
+                dialogue.append({"role": m.role, "content": f"{m.content or ''} [earlier photo, no longer attached]"})
+        elif m.tool_calls is not None:
             dialogue.append({"role": m.role, "tool_calls": m.tool_calls})
         elif m.role == "tool":
             dialogue.append(
@@ -158,7 +169,8 @@ class Dialogue:
         # Third part: the actual dialogue history (excluding few-shot examples)
         actual_messages = [m for m in non_system_messages if not m.is_temporary]
         complete_actual = self._ensure_tool_calls_complete(actual_messages)
+        latest_image_id = next((m.uniq_id for m in reversed(complete_actual) if m.images), None)
         for m in complete_actual:
-            self.getMessages(m, dialogue)
+            self.getMessages(m, dialogue, latest_image_id)
 
         return dialogue

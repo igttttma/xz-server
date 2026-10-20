@@ -133,7 +133,7 @@ async def handle_mcp_message(
         # Check for tool call response first
         if msg_id in mcp_client.call_results:
             logger.bind(tag=TAG).debug(
-                f"Received tool call response, ID: {msg_id}, result: {result}"
+                f"Received tool call response, ID: {msg_id}, result: {_loggable(result)}"
             )
             await mcp_client.resolve_call_result(msg_id, result)
             return
@@ -216,6 +216,8 @@ async def handle_mcp_message(
                     if hasattr(conn, "func_handler") and conn.func_handler:
                         conn.func_handler.tool_manager.refresh_tools()
                         conn.func_handler.current_support_functions()
+                    if hasattr(mcp_client, "tools_loaded"):
+                        mcp_client.tools_loaded.set()
             return
 
     # Handle method calls (requests from the client)
@@ -291,6 +293,19 @@ async def send_mcp_tools_list_continue_request(conn: "ConnectionHandler", cursor
     }
     logger.bind(tag=TAG).info(f"Sending MCP tool list request with cursor: {cursor}")
     await send_mcp_message(conn, payload)
+
+
+def _loggable(result):
+    """A copy of an MCP result with image data replaced by its size, for logging."""
+    if isinstance(result, dict) and isinstance(result.get("content"), list):
+        content = [
+            {**c, "data": f"<{len(c['data']) * 3 // 4} bytes>"}
+            if isinstance(c, dict) and c.get("type") == "image" and isinstance(c.get("data"), str)
+            else c
+            for c in result["content"]
+        ]
+        return {**result, "content": content}
+    return result
 
 
 async def call_mcp_tool(
@@ -378,7 +393,7 @@ async def call_mcp_tool(
         # Wait for response or timeout
         raw_result = await asyncio.wait_for(result_future, timeout=timeout)
         logger.bind(tag=TAG).info(
-            f"Client mcp tool call {actual_name} succeeded, raw result: {raw_result}"
+            f"Client mcp tool call {actual_name} succeeded, raw result: {_loggable(raw_result)}"
         )
 
         if isinstance(raw_result, dict):
@@ -390,9 +405,16 @@ async def call_mcp_tool(
 
             content = raw_result.get("content")
             if isinstance(content, list) and len(content) > 0:
-                if isinstance(content[0], dict) and "text" in content[0]:
+                # Image blocks go to the main LLM as part of the conversation
+                images = [c for c in content if isinstance(c, dict) and c.get("type") == "image" and c.get("data")]
+                texts = [c["text"] for c in content if isinstance(c, dict) and "text" in c]
+                for image in images:
+                    conn.attach_image(image["data"], image.get("mimeType", "image/jpeg"), f"from {actual_name}")
+                if images:
+                    return "\n".join(texts) or "Photo captured; it is attached to the conversation."
+                if texts:
                     # Return the text content directly without JSON parsing
-                    return content[0]["text"]
+                    return texts[0]
         # If the result is not in the expected format, convert it to a string
         return str(raw_result)
     except asyncio.TimeoutError:

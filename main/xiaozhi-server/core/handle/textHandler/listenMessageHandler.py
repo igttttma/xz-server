@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 from core.utils.dialogue import Message
 from core.providers.asr.dto.dto import InterfaceType
 from core.handle.receiveAudioHandle import startToChat
+from core.handle.helloHandle import playWakeupResponse
 from core.handle.reportHandle import enqueue_asr_report
 from core.handle.sendAudioHandle import send_stt_message, send_tts_message
 from core.handle.textMessageHandler import TextMessageHandler
@@ -18,6 +19,13 @@ from core.providers.tts.dto.dto import ContentType, TTSMessageDTO, SentenceType
 
 
 TAG = __name__
+
+
+async def wait_for_tts(conn: "ConnectionHandler", timeout: float = 3) -> bool:
+    start_time = time.time()
+    while not conn.tts and time.time() - start_time < timeout:
+        await asyncio.sleep(0.1)
+    return bool(conn.tts)
 
 class ListenTextMessageHandler(TextMessageHandler):
     """Listen message handler"""
@@ -93,6 +101,12 @@ class ListenTextMessageHandler(TextMessageHandler):
                     conn.dialogue.put(Message(role="assistant", content=call_text))
                     return
 
+                # Explicit wake event from a client with local wake-word detection:
+                # no need to guess from the text (typed input uses the same message)
+                if msg_json.get("wake") is True and not conn.need_bind:
+                    await self._handle_wake_event(conn, original_text)
+                    return
+
                 # Check whether it is a wake word
                 is_wakeup_words = filtered_text in conn.config.get("wakeup_words")
                 # Whether wake word replies are enabled
@@ -114,3 +128,21 @@ class ListenTextMessageHandler(TextMessageHandler):
                     enqueue_asr_report(conn, original_text, [])
                     # Otherwise the LLM needs to reply to the text content
                     await startToChat(conn, original_text)
+
+    async def _handle_wake_event(self, conn: "ConnectionHandler", text: str) -> None:
+        # wake_greeting: "cached" (pre-generated greeting in the current voice),
+        # "none" (just listen), or "llm" (let the LLM greet)
+        mode = conn.config.get("wake_greeting", "cached")
+        conn.logger.bind(tag=TAG).info(f"Wake event: {text} (greeting: {mode})")
+        if mode == "llm":
+            conn.just_woken_up = True
+            enqueue_asr_report(conn, text, [])
+            await startToChat(conn, text)
+            return
+        if mode == "cached" and await wait_for_tts(conn):
+            await playWakeupResponse(conn)
+            return
+        # "none", or no TTS available: just let the client start listening
+        conn.just_woken_up = True
+        await send_tts_message(conn, "stop", None)
+        conn.client_is_speaking = False

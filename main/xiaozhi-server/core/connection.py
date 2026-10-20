@@ -104,6 +104,11 @@ class ConnectionHandler:
         self.websocket: websockets.ServerConnection | None = None
         self.headers = None
         self.device_id = None
+        # Set once the full system prompt (location, weather, tool rules) is in place
+        self.prompt_ready = threading.Event()
+        # Images waiting to join the conversation (see attach_image)
+        self._pending_images = []
+        self._pending_images_lock = threading.Lock()
         self.client_ip = None
         self.prompt = None
         self.welcome_msg = None
@@ -657,18 +662,20 @@ class ConnectionHandler:
             self.logger.bind(tag=TAG).error(f"Failed to instantiate components: {e}")
 
     def _init_prompt_enhancement(self):
-
-        # Update the context information
-        self.prompt_manager.update_context_info(self, self.client_ip)
-        enhanced_prompt = self.prompt_manager.build_enhanced_prompt(
-            self.config["prompt"],
-            self.device_id,
-            self.client_ip,
-            emoji_enabled=(self.features or {}).get("emoji", True),
-        )
-        if enhanced_prompt:
-            self.change_system_prompt(enhanced_prompt)
-            self.logger.bind(tag=TAG).debug("System prompt enhanced and updated")
+        try:
+            # Update the context information (location + pre-fetched weather)
+            self.prompt_manager.update_context_info(self, self.client_ip)
+            enhanced_prompt = self.prompt_manager.build_enhanced_prompt(
+                self.config["prompt"],
+                self.device_id,
+                self.client_ip,
+                emoji_enabled=(self.features or {}).get("emoji", True),
+            )
+            if enhanced_prompt:
+                self.change_system_prompt(enhanced_prompt)
+                self.logger.bind(tag=TAG).debug("System prompt enhanced and updated")
+        finally:
+            self.prompt_ready.set()
 
     def _inject_tool_call_fewshot(self):
         """Inject tool call few-shot examples into the dialogue history.
@@ -1053,6 +1060,18 @@ class ConnectionHandler:
         # Update the system prompt in the context
         self.dialogue.update_system_message(self.prompt)
 
+    def attach_image(self, image_base64: str, mime: str = "image/jpeg", note: str = ""):
+        """Queue an image for the main LLM; it joins the conversation with the next
+        LLM request (after the pending tool result, or with the next user message)."""
+        with self._pending_images_lock:
+            self._pending_images.append((f"data:{mime};base64,{image_base64}", note))
+        self.logger.bind(tag=TAG).info(f"Image attached to the conversation ({len(image_base64) * 3 // 4} bytes): {note}")
+
+    def _take_pending_images(self):
+        with self._pending_images_lock:
+            images, self._pending_images = self._pending_images, []
+        return images
+
     def chat(self, query, depth=0):
         # Save the current task sentence_id in a local variable so a new task cannot overwrite it
         current_sentence_id = None
@@ -1062,9 +1081,17 @@ class ConnectionHandler:
 
         # At the top level, create a new session ID and send the FIRST request
         if depth == 0:
+            # A message right after connecting must not run on the bare persona prompt
+            if not self.prompt_ready.wait(timeout=8):
+                self.logger.bind(tag=TAG).warning("Full system prompt not ready after 8s; continuing with the quick prompt")
+            # Likewise the device's MCP tools (they arrive just after connect)
+            tools_loaded = getattr(getattr(self, "mcp_client", None), "tools_loaded", None)
+            if tools_loaded is not None and not tools_loaded.wait(timeout=5):
+                self.logger.bind(tag=TAG).warning("Device MCP tools not loaded after 5s; continuing without them")
             current_sentence_id = str(uuid.uuid4().hex)
             self.sentence_id = current_sentence_id  # update the shared attribute
-            self.dialogue.put(Message(role="user", content=query))
+            images = self._take_pending_images()
+            self.dialogue.put(Message(role="user", content=query, images=[url for url, _ in images] or None))
             self.tts.tts_text_queue.put(
                 TTSMessageDTO(
                     sentence_id=current_sentence_id,
@@ -1127,21 +1154,29 @@ class ConnectionHandler:
                 self.system_introduced_speakers.add(cs)
                 speaker_for_system = cs
 
+            llm_dialogue = self.dialogue.get_llm_dialogue_with_memory(
+                memory_str, self.config.get("voiceprint", {}), speaker_for_system
+            )
+            image_count = sum(
+                1
+                for m in llm_dialogue
+                if isinstance(m.get("content"), list)
+                for part in m["content"]
+                if part.get("type") == "image_url"
+            )
+            if image_count:
+                self.logger.bind(tag=TAG).info(f"LLM request includes {image_count} image(s)")
             if self.intent_type == "function_call" and functions is not None:
                 # Use the streaming interface that supports functions
                 llm_responses = self.llm.response_with_functions(
                     self.session_id,
-                    self.dialogue.get_llm_dialogue_with_memory(
-                        memory_str, self.config.get("voiceprint", {}), speaker_for_system
-                    ),
+                    llm_dialogue,
                     functions=functions,
                 )
             else:
                 llm_responses = self.llm.response(
                     self.session_id,
-                    self.dialogue.get_llm_dialogue_with_memory(
-                        memory_str, self.config.get("voiceprint", {}), speaker_for_system
-                    ),
+                    llm_dialogue,
                 )
         except Exception as e:
             self.logger.bind(tag=TAG).error(f"LLM processing error {query}: {e}")
@@ -1269,6 +1304,9 @@ class ConnectionHandler:
                     )
 
             if not bHasError and len(tool_calls_list) > 0:
+                self.logger.bind(tag=TAG).info(
+                    "LLM tool calls: " + ", ".join(f"{tc['name']}({tc.get('arguments', '')[:80]})" for tc in tool_calls_list)
+                )
                 # Handle the direct_answer virtual tool
                 direct_answer_calls = [tc for tc in tool_calls_list if tc["name"] == "direct_answer"]
                 real_tool_calls = [tc for tc in tool_calls_list if tc["name"] != "direct_answer"]
@@ -1324,6 +1362,15 @@ class ConnectionHandler:
                     self.tts.store_tts_text(current_sentence_id, streamed_text)
                     self.dialogue.put(Message(role="assistant", content=streamed_text))
                 response_message.clear()
+
+                # Text pauses while the tools run; streaming TTS can flush what it has
+                self.tts.tts_text_queue.put(
+                    TTSMessageDTO(
+                        sentence_id=current_sentence_id,
+                        sentence_type=SentenceType.MIDDLE,
+                        content_type=ContentType.PAUSE,
+                    )
+                )
 
                 # Collect the Futures of all tool calls
                 futures_with_data = []
@@ -1500,6 +1547,18 @@ class ConnectionHandler:
                             content=text,
                         )
                     )
+
+            # Photos returned by these tools join the conversation for the main LLM
+            images = self._take_pending_images()
+            if images:
+                notes = "; ".join(note for _, note in images if note)
+                self.dialogue.put(
+                    Message(
+                        role="user",
+                        content=f"[Photo from the tool call above{': ' + notes if notes else ''}]",
+                        images=[url for url, _ in images],
+                    )
+                )
 
             self.chat(None, depth=depth + 1)
 
@@ -1685,6 +1744,11 @@ class ConnectionHandler:
             if hasattr(self, "audio_rate_controller") and self.audio_rate_controller:
                 self.audio_rate_controller.reset()
                 self.logger.bind(tag=TAG).debug("Audio flow controller reset")
+
+            # Stop speech still being synthesized, or the interrupted reply plays on
+            interrupt = getattr(self.tts, "interrupt", None)
+            if interrupt:
+                interrupt()
 
             self.logger.bind(tag=TAG).debug(
                 f"Cleanup finished: TTS queue size={self.tts.tts_text_queue.qsize()}, audio queue size={self.tts.tts_audio_queue.qsize()}"

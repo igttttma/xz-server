@@ -64,6 +64,7 @@ async def main():
     # Add the stdin monitoring task
     stdin_task = asyncio.create_task(monitor_stdin())
 
+
     # Start the global GC manager (cleanup every 5 minutes)
     gc_manager = get_gc_manager(interval_seconds=300)
     await gc_manager.start()
@@ -72,7 +73,7 @@ async def main():
     ws_server = WebSocketServer(config)
     ws_task = asyncio.create_task(ws_server.start())
     # Start the Simple http server
-    ota_server = SimpleHttpServer(config)
+    ota_server = SimpleHttpServer(config, ws_server)
     ota_task = asyncio.create_task(ota_server.start())
 
     read_config_from_api = config.get("read_config_from_api", False)
@@ -81,6 +82,10 @@ async def main():
         logger.bind(tag=TAG).info(
             "OTA endpoint is\t\thttp://{}:{}/xiaozhi/ota/",
             get_local_ip(),
+            port,
+        )
+        logger.bind(tag=TAG).info(
+            "Settings portal is\t\thttp://127.0.0.1:{}/portal/",
             port,
         )
     logger.bind(tag=TAG).info(

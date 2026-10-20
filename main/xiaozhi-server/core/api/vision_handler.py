@@ -1,11 +1,8 @@
 import json
-import copy
 from aiohttp import web
 from config.logger import setup_logging
 from core.api.base_handler import BaseHandler
 from core.utils.util import get_vision_url, is_valid_image_file
-from core.utils.vllm import create_instance
-from config.config_loader import get_private_config_from_api
 from core.utils.auth import AuthToken
 import base64
 from typing import Tuple, Optional
@@ -18,8 +15,9 @@ MAX_FILE_SIZE = 5 * 1024 * 1024
 
 
 class VisionHandler(BaseHandler):
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, ws_server=None):
         super().__init__(config)
+        self.ws_server = ws_server
         # Initialize the authentication utility
         self.auth = AuthToken(config["server"]["auth_key"])
 
@@ -100,34 +98,15 @@ class VisionHandler(BaseHandler):
             # Convert the image to base64 encoding
             image_base64 = base64.b64encode(image_data).decode("utf-8")
 
-            # If the Control Panel is enabled, fetch the model configuration from it
-            current_config = copy.deepcopy(self.config)
-            read_config_from_api = current_config.get("read_config_from_api", False)
-            if read_config_from_api:
-                current_config = await get_private_config_from_api(
-                    current_config,
-                    device_id,
-                    client_id,
-                )
-
-            select_vllm_module = current_config["selected_module"].get("VLLM")
-            if not select_vllm_module:
-                raise ValueError("You have not set a default vision analysis module")
-
-            vllm_type = (
-                select_vllm_module
-                if "type" not in current_config["VLLM"][select_vllm_module]
-                else current_config["VLLM"][select_vllm_module]["type"]
-            )
-
-            if not vllm_type:
-                raise ValueError(f"Unable to find the provider for VLLM module {vllm_type}")
-
-            vllm = create_instance(
-                vllm_type, current_config["VLLM"][select_vllm_module]
-            )
-
-            result = vllm.response(question, image_base64)
+            # The photo joins the device's live conversation; the main LLM
+            # (multimodal) answers it with full context, no separate vision model
+            conn = (self.ws_server.active_connections.get(device_id)
+                    if self.ws_server else None)
+            if conn is None:
+                raise ValueError("No active conversation for this device")
+            mime = "image/png" if image_data[1:4] == b"PNG" else "image/jpeg"
+            conn.attach_image(image_base64, mime, question)
+            result = "Photo captured; it is attached to the conversation. Answer from the photo."
 
             return_json = {
                 "success": True,

@@ -47,11 +47,13 @@ class DeviceMCPExecutor(ToolExecutor):
                 except Exception as e:
                     pass
 
-            # The vision LLM result does not go through a second LLM pass
+            # The vision LLM result does not go through a second LLM pass.
+            # Only a known Action name is a directive: device tools may use
+            # "action" for their own data (e.g. the tool name).
             if (
                 resultJson is not None
                 and isinstance(resultJson, dict)
-                and "action" in resultJson
+                and resultJson.get("action") in Action.__members__
             ):
                 return ActionResponse(
                     action=Action[resultJson["action"]],

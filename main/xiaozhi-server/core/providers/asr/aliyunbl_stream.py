@@ -170,17 +170,23 @@ class ASRProvider(ASRProviderBase):
 
                     # Handle the task-started event
                     if event == "task-started":
-                        self.server_ready = True
                         logger.bind(tag=TAG).debug("Server is ready, starting to send buffered audio...")
 
-                        # Send the buffered audio
-                        if conn.asr_audio:
-                            for cached_pcm in conn.asr_audio[-10:]:
-                                try:
-                                    await self.asr_ws.send(cached_pcm)
-                                except Exception as e:
-                                    logger.bind(tag=TAG).warning(f"Failed to send buffered audio: {e}")
-                                    break
+                        # Send everything buffered while the task was starting: the
+                        # pre-roll plus all speech since it began (only the last 10
+                        # frames were sent before, which cut the start of the sentence
+                        # whenever connecting took longer than ~0.6 s). Frames that
+                        # arrive during the flush are appended and sent in order; live
+                        # sending starts once the buffer is drained.
+                        sent = 0
+                        while sent < len(conn.asr_audio):
+                            try:
+                                await self.asr_ws.send(conn.asr_audio[sent])
+                            except Exception as e:
+                                logger.bind(tag=TAG).warning(f"Failed to send buffered audio: {e}")
+                                break
+                            sent += 1
+                        self.server_ready = True
                         continue
 
                     # Handle the result-generated event

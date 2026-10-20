@@ -1,8 +1,11 @@
+import asyncio
+import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import httpx
-from bs4 import BeautifulSoup
 from config.logger import setup_logging
 from plugins_func.register import register_function, ToolType, ActionResponse, Action
-from core.utils.util import get_ip_info
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -11,221 +14,168 @@ if TYPE_CHECKING:
 TAG = __name__
 logger = setup_logging()
 
+# QWeather API only (English): GeoAPI city lookup, then current conditions and the
+# daily forecast for the city's coordinates. Every QWeather account has its own
+# API host (console → Settings); the key only works on that host.
 GET_WEATHER_FUNCTION_DESC = {
     "type": "function",
     "function": {
         "name": "get_weather",
         "description": (
-            "Get the weather for a location; the user should provide a location, e.g. if the user says Hangzhou weather, the parameter is: Hangzhou. "
-            "If the user names a province, use the provincial capital by default. If the user gives a place name that is neither a province nor a city, use the capital of the province containing that place by default. "
-            "Important: the local weather for the next 7 days is already provided in the context; never call this tool unless the user names another city."
+            "Get the current weather and the forecast for the next days. "
+            "The user's local weather is already in the context; call this for other cities, "
+            "or when the context says local weather is unavailable. Never guess the weather."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "location": {
                     "type": "string",
-                    "description": "The place name, for example Hangzhou. Optional; omit it if not provided",
-                },
-                "lang": {
-                    "type": "string",
-                    "description": "The language code used by the user for the response, for example zh_CN/zh_HK/en_US/ja_JP; defaults to zh_CN",
+                    "description": "City name in English, e.g. Beijing or London. Omit if the user names no place.",
                 },
             },
-            "required": ["lang"],
         },
     },
 }
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36"
+FORECAST_DAYS = 7
+CACHE_SECONDS = 600
+
+
+def _fmt(measure) -> str:
+    """{"value": 7.37, "unit": "°C"} -> "7°C" """
+    if not isinstance(measure, dict) or measure.get("value") is None:
+        return "?"
+    return f"{round(measure['value'])}{measure.get('unit', '')}"
+
+
+def _pct(fraction) -> str:
+    return f"{round(fraction * 100)}%" if isinstance(fraction, (int, float)) else "?"
+
+
+class QWeatherError(RuntimeError):
+    def __init__(self, status, detail):
+        super().__init__(f"QWeather HTTP {status}")
+        self.status, self.detail = status, detail
+
+
+async def _get(client, api_host, api_key, path, **params):
+    started = time.monotonic()
+    response = await client.get(
+        f"https://{api_host}{path}",
+        params={"lang": "en", **params},
+        headers={"X-QW-Api-Key": api_key},
     )
-}
-
-# Weather codes https://dev.qweather.com/docs/resource/icons/#weather-icons
-WEATHER_CODE_MAP = {
-    "100": "Sunny",
-    "101": "Cloudy",
-    "102": "Few Clouds",
-    "103": "Partly Cloudy",
-    "104": "Overcast",
-    "150": "Sunny",
-    "151": "Cloudy",
-    "152": "Few Clouds",
-    "153": "Partly Cloudy",
-    "300": "Shower",
-    "301": "Heavy Shower",
-    "302": "Thundery Shower",
-    "303": "Heavy Thundery Shower",
-    "304": "Thundery Shower with Hail",
-    "305": "Light Rain",
-    "306": "Moderate Rain",
-    "307": "Heavy Rain",
-    "308": "Extreme Rain",
-    "309": "Drizzle/Light Rain",
-    "310": "Rainstorm",
-    "311": "Heavy Rainstorm",
-    "312": "Severe Rainstorm",
-    "313": "Freezing Rain",
-    "314": "Light to Moderate Rain",
-    "315": "Moderate to Heavy Rain",
-    "316": "Heavy Rain to Rainstorm",
-    "317": "Rainstorm to Heavy Rainstorm",
-    "318": "Heavy to Severe Rainstorm",
-    "350": "Shower",
-    "351": "Heavy Shower",
-    "399": "Rain",
-    "400": "Light Snow",
-    "401": "Moderate Snow",
-    "402": "Heavy Snow",
-    "403": "Snowstorm",
-    "404": "Sleet",
-    "405": "Rain and Snow",
-    "406": "Shower of Rain and Snow",
-    "407": "Snow Shower",
-    "408": "Light to Moderate Snow",
-    "409": "Moderate to Heavy Snow",
-    "410": "Heavy Snow to Snowstorm",
-    "456": "Shower of Rain and Snow",
-    "457": "Snow Shower",
-    "499": "Snow",
-    "500": "Mist",
-    "501": "Fog",
-    "502": "Haze",
-    "503": "Blowing Sand",
-    "504": "Floating Dust",
-    "507": "Sandstorm",
-    "508": "Strong Sandstorm",
-    "509": "Dense Fog",
-    "510": "Strong Dense Fog",
-    "511": "Moderate Haze",
-    "512": "Heavy Haze",
-    "513": "Severe Haze",
-    "514": "Thick Fog",
-    "515": "Extra Strong Dense Fog",
-    "900": "Hot",
-    "901": "Cold",
-    "999": "Unknown",
-}
+    logger.bind(tag=TAG).info(f"QWeather {path}: HTTP {response.status_code} in {time.monotonic() - started:.2f}s")
+    if response.status_code != 200:
+        detail = response.text[:200]
+        logger.bind(tag=TAG).error(f"QWeather {path} failed: HTTP {response.status_code} {detail}")
+        raise QWeatherError(response.status_code, detail)
+    return response.json()
 
 
-async def fetch_city_info(location, api_key, api_host):
-    url = f"https://{api_host}/geo/v2/city/lookup?key={api_key}&location={location}&lang=zh"
-    async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
-        response = await client.get(url, headers=HEADERS)
-    data = response.json()
-    if data.get("error") is not None:
-        logger.bind(tag=TAG).error(
-            f"Failed to get weather, reason: {data.get('error', {}).get('detail')}"
+def _build_report(city, current, daily) -> str:
+    tz = ZoneInfo(city.get("tz") or "UTC")
+    place = ", ".join(p for p in (city.get("name"), city.get("adm1"), city.get("country")) if p)
+    now = datetime.now(tz)
+    lines = [f"Weather for {place} (local time {now:%a %b %d, %H:%M}).", ""]
+
+    wind = current.get("wind", {})
+    lines.append(
+        "Now: {cond}, {temp} (feels like {feels}), humidity {hum}, wind {dir} {speed}, precipitation {rain}.".format(
+            cond=current.get("condition", {}).get("text", "unknown"),
+            temp=_fmt(current.get("temperature")),
+            feels=_fmt(current.get("feelsLike")),
+            hum=_pct(current.get("humidity")),
+            dir=wind.get("direction", {}).get("compass", "").upper(),
+            speed=_fmt(wind.get("speed")),
+            rain=_fmt(current.get("precipitation", {}).get("amount")),
         )
-        return None
-    return data.get("location", [])[0] if data.get("location") else None
-
-
-async def fetch_weather_page(url):
-    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=3.0)) as client:
-        response = await client.get(url, headers=HEADERS)
-    return BeautifulSoup(response.text, "html.parser") if response.status_code == 200 else None
-
-
-def parse_weather_info(soup):
-    city_name = soup.select_one("h1.c-submenu__location").get_text(strip=True)
-
-    current_abstract = soup.select_one(".c-city-weather-current .current-abstract")
-    current_abstract = (
-        current_abstract.get_text(strip=True) if current_abstract else "Unknown"
     )
 
-    current_basic = {}
-    for item in soup.select(
-        ".c-city-weather-current .current-basic .current-basic___item"
-    ):
-        parts = item.get_text(strip=True, separator=" ").split(" ")
-        if len(parts) == 2:
-            key, value = parts[1], parts[0]
-            current_basic[key] = value
-
-    temps_list = []
-    for row in soup.select(".city-forecast-tabs__row")[:7]:  # Take the first 7 days of data
-        date = row.select_one(".date-bg .date").get_text(strip=True)
-        weather_code = (
-            row.select_one(".date-bg .icon")["src"].split("/")[-1].split(".")[0]
+    lines += ["", "Forecast:"]
+    for day in daily.get("days", []):
+        # Days are bounded in UTC; label each with the city's local date
+        start = datetime.fromisoformat(day["forecastStartTime"].replace("Z", "+00:00"))
+        local_date = (start.astimezone(tz) + timedelta(hours=1)).date()
+        if local_date < now.date():
+            continue
+        label = "Today" if local_date == now.date() else (
+            "Tomorrow" if local_date == now.date() + timedelta(days=1) else f"{local_date:%a %b %d}"
         )
-        weather = WEATHER_CODE_MAP.get(weather_code, "Unknown")
-        temps = [span.get_text(strip=True) for span in row.select(".tmp-cont .temp")]
-        high_temp, low_temp = (temps[0], temps[-1]) if len(temps) >= 2 else (None, None)
-        temps_list.append((date, weather, high_temp, low_temp))
+        daytime, night = day.get("daytime", {}), day.get("nighttime", {})
+        rain = max(
+            daytime.get("precipitation", {}).get("probability") or 0,
+            night.get("precipitation", {}).get("probability") or 0,
+        )
+        lines.append(
+            f"- {label}: {daytime.get('condition', {}).get('text', '?')} by day, "
+            f"{night.get('condition', {}).get('text', '?')} at night, "
+            f"{_fmt(day.get('temperatureMin'))} to {_fmt(day.get('temperatureMax'))}, "
+            f"chance of rain {_pct(rain)}"
+        )
+    return "\n".join(lines)
 
-    return city_name, current_abstract, current_basic, temps_list
+
+class WeatherUnavailable(Exception):
+    """The report can't be produced; the message is safe to show the LLM."""
+
+
+async def fetch_weather_report(weather_config: dict, location: str) -> str:
+    """English weather report for a city name or "lon,lat" coordinates (cached)."""
+    from core.utils.cache.manager import cache_manager, CacheType
+
+    api_host = weather_config.get("api_host", "")
+    api_key = weather_config.get("api_key", "")
+    if not api_host or not api_key:
+        raise WeatherUnavailable("The weather service is not configured, so the weather can't be checked right now.")
+    if not location:
+        raise WeatherUnavailable("No city was given and the user's location is unknown; ask the user which city.")
+
+    cache_key = f"qweather_v1_{location.lower()}"
+    cached = cache_manager.get(CacheType.WEATHER, cache_key)
+    if cached:
+        return cached
+
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
+            try:
+                geo = await _get(client, api_host, api_key, "/geo/v2/city/lookup", location=location, number=1)
+            except QWeatherError as e:
+                if "no-such-location" not in e.detail:
+                    raise
+                geo = {}
+            cities = geo.get("location") or []
+            if not cities:
+                raise WeatherUnavailable(f"No city found for '{location}'. Ask the user to check the name.")
+            city = cities[0]
+            coords = f"{float(city['lat']):.2f}/{float(city['lon']):.2f}"
+            current = await _get(client, api_host, api_key, f"/weather/v1/current/{coords}")
+            daily = await _get(client, api_host, api_key, f"/weather/v1/daily/{coords}", days=FORECAST_DAYS)
+    except WeatherUnavailable:
+        raise
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"Weather lookup failed for {location} after {time.monotonic() - started:.1f}s: {type(e).__name__} {e}")
+        raise WeatherUnavailable("The weather service could not be reached; tell the user you can't check the weather right now.")
+
+    report = _build_report(city, current, daily)
+    logger.bind(tag=TAG).info(f"Weather for {city.get('name')} fetched in {time.monotonic() - started:.1f}s")
+    cache_manager.set(CacheType.WEATHER, cache_key, report, ttl=CACHE_SECONDS)
+    return report
 
 
 @register_function("get_weather", GET_WEATHER_FUNCTION_DESC, ToolType.SYSTEM_CTL)
-async def get_weather(conn: "ConnectionHandler", location: str = None, lang: str = "zh_CN"):
-    from core.utils.cache.manager import cache_manager, CacheType
-
+async def get_weather(conn: "ConnectionHandler", location: str = None, lang: str = None):
+    # `lang` is accepted for older callers and ignored: reports are always English
     weather_config = conn.config.get("plugins", {}).get("get_weather", {})
-    api_host = weather_config.get("api_host", "mj7p3y7naa.re.qweatherapi.com")
-    api_key = weather_config.get("api_key", "a861d0d5e7bf4ee1a83d9a9e4f96d4da")
-    default_location = weather_config.get("default_location", "Guangzhou")
-    client_ip = conn.client_ip
-
-    # Prefer the location parameter provided by the user
-    if not location:
-        # Resolve the city from the client IP
-        if client_ip:
-            # First get the city information for the IP from the cache
-            cached_ip_info = cache_manager.get(CacheType.IP_INFO, client_ip)
-            if cached_ip_info:
-                location = cached_ip_info.get("city")
-            else:
-                # Cache miss; call the API to get it
-                ip_info = get_ip_info(client_ip, logger)
-                if ip_info:
-                    cache_manager.set(CacheType.IP_INFO, client_ip, ip_info)
-                    location = ip_info.get("city")
-
-            if not location:
-                location = default_location
-        else:
-            # If there is no IP, use the default location
-            location = default_location
-    # Try to get the full weather report from the cache
-    weather_cache_key = f"full_weather_{location}_{lang}"
-    cached_weather_report = cache_manager.get(CacheType.WEATHER, weather_cache_key)
-    if cached_weather_report:
-        return ActionResponse(Action.REQLLM, cached_weather_report, None)
-
-    # Cache miss; fetch up-to-date weather data
-    city_info = await fetch_city_info(location, api_key, api_host)
-    if not city_info:
-        return ActionResponse(
-            Action.REQLLM, f"No matching city found: {location}. Please check that the location is correct", None
-        )
-    soup = await fetch_weather_page(city_info["fxLink"])
-    if not soup:
-        return ActionResponse(Action.REQLLM, None, "Request failed")
-    city_name, current_abstract, current_basic, temps_list = parse_weather_info(soup)
-
-    weather_report = f"The location you queried is: {city_name}\n\nCurrent weather: {current_abstract}\n"
-
-    # Add the valid current weather parameters
-    if current_basic:
-        weather_report += "Detailed parameters:\n"
-        for key, value in current_basic.items():
-            if value != "0":  # Filter out invalid values
-                weather_report += f"  · {key}: {value}\n"
-
-    # Add the 7-day forecast
-    weather_report += "\n7-day forecast:\n"
-    for date, weather, high, low in temps_list:
-        weather_report += f"{date}: {weather}, temperature {low}~{high}\n"
-
-    # Hint
-    weather_report += "\n(If you need the detailed weather for a particular day, please tell me the date)"
-
-    # Cache the full weather report
-    cache_manager.set(CacheType.WEATHER, weather_cache_key, weather_report)
-
-    return ActionResponse(Action.REQLLM, weather_report, None)
+    # No city named: the user's own location (resolved at connect), else the default city
+    location = (
+        (location or "").strip()
+        or getattr(getattr(conn, "prompt_manager", None), "weather_location", None)
+        or weather_config.get("default_location", "")
+    )
+    try:
+        return ActionResponse(Action.REQLLM, await fetch_weather_report(weather_config, location), None)
+    except WeatherUnavailable as e:
+        return ActionResponse(Action.REQLLM, str(e), None)

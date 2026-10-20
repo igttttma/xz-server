@@ -41,6 +41,19 @@ class TTSProvider(TTSProviderBase):
         self._monitor_task = None
         self.activate_session = False
         self.last_active_time = None
+        # Task lifecycle per the CosyVoice WebSocket API: one task at a time per
+        # connection, each with a fresh task_id; continue-task only after
+        # task-started; at most 23s between sends or the task times out;
+        # finish-task flushes buffered text. So a task starts on the turn's first
+        # text and is finished early (not left to time out) before a pause: tool
+        # calls, or IDLE_FINISH_SECONDS without text. The next text starts a new task.
+        self._task_id = None
+        self._task_open = False  # a task of this turn is accepting text
+        self._task_ready = asyncio.Event()  # set on task-started
+        self._task_done = asyncio.Event()  # set when the last task finished or failed
+        self._task_done.set()
+        self._early_finished_ids = set()  # finished early: the turn's playback continues
+        self._last_text_time = 0.0
 
         # Model and voice configuration
         self.model = config.get("model", "cosyvoice-v2")
@@ -110,10 +123,12 @@ class TTSProvider(TTSProviderBase):
                 if self.conn.client_abort:
                     try:
                         logger.bind(tag=TAG).info("Interruption received, terminating the TTS text processing thread")
-                        asyncio.run_coroutine_threadsafe(
-                            self.finish_session(self.conn.sentence_id),
-                            loop=self.conn.loop,
-                        )
+                        if self._task_open and self._task_id:
+                            self._task_open = False
+                            asyncio.run_coroutine_threadsafe(
+                                self.finish_session(self._task_id),
+                                loop=self.conn.loop,
+                            )
                         continue
                     except Exception as e:
                         logger.bind(tag=TAG).error(f"Failed to cancel TTS session: {str(e)}")
@@ -122,31 +137,18 @@ class TTSProvider(TTSProviderBase):
                 # Filter stale messages: check whether sentence_id matches
                 if message.sentence_id != self.conn.sentence_id:
                     continue
+                # Audio from here on belongs to this turn (handle_opus tags it)
+                self.current_sentence_id = message.sentence_id
 
                 logger.bind(tag=TAG).debug(
                     f"Received TTS task｜{message.sentence_type.name} ｜ {message.content_type.name} | Session ID: {message.sentence_id}"
                 )
 
                 if message.sentence_type == SentenceType.FIRST:
-                    # Reset streaming state
+                    # Reset streaming state; the Bailian task starts with the first text
                     self.reset_stream_state()
-                    # Initialize the session
-                    try:
-                        if not getattr(self.conn, "sentence_id", None): 
-                            self.conn.sentence_id = uuid.uuid4().hex
-                            logger.bind(tag=TAG).debug(f"Automatically generated a new session ID: {self.conn.sentence_id}")
-
-                        logger.bind(tag=TAG).debug("Starting the TTS session...")
-                        future = asyncio.run_coroutine_threadsafe(
-                            self.start_session(self.conn.sentence_id),
-                            loop=self.conn.loop,
-                        )
-                        future.result(timeout=self.tts_timeout)
-                        self.before_stop_play_files.clear()
-                        logger.bind(tag=TAG).debug("TTS session started successfully")
-                    except Exception as e:
-                        logger.bind(tag=TAG).error(f"Failed to start TTS session: {str(e)}")
-                        continue
+                    self.before_stop_play_files.clear()
+                    self._task_open = False
 
                 elif ContentType.TEXT == message.content_type:
                     if message.content_detail:
@@ -155,13 +157,23 @@ class TTSProvider(TTSProviderBase):
                                 f"Starting to send TTS text: {message.content_detail}"
                             )
                             future = asyncio.run_coroutine_threadsafe(
-                                self.text_to_speak(message.content_detail, None),
+                                self._speak(message.content_detail),
                                 loop=self.conn.loop,
                             )
                             future.result(timeout=self.tts_timeout)
                         except Exception as e:
                             logger.bind(tag=TAG).error(f"Failed to send TTS text: {str(e)}")
                             continue
+
+                elif ContentType.PAUSE == message.content_type:
+                    try:
+                        future = asyncio.run_coroutine_threadsafe(
+                            self._finish_early("text pauses for tool calls"),
+                            loop=self.conn.loop,
+                        )
+                        future.result(timeout=self.tts_timeout)
+                    except Exception as e:
+                        logger.bind(tag=TAG).error(f"Failed to finish TTS task early: {str(e)}")
 
                 elif ContentType.FILE == message.content_type:
                     logger.bind(tag=TAG).info(
@@ -173,12 +185,23 @@ class TTSProvider(TTSProviderBase):
 
                 if message.sentence_type == SentenceType.LAST:
                     try:
-                        logger.bind(tag=TAG).debug("Ending the TTS session...")
-                        future = asyncio.run_coroutine_threadsafe(
-                            self.finish_session(self.conn.sentence_id),
-                            loop=self.conn.loop,
-                        )
-                        future.result()
+                        if self._task_open and self._task_id:
+                            # task-finished ends the turn's playback
+                            logger.bind(tag=TAG).debug("Ending the TTS session...")
+                            self._task_open = False
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.finish_session(self._task_id),
+                                loop=self.conn.loop,
+                            )
+                            future.result()
+                        else:
+                            # No open task (no text, or finished early): end playback
+                            # once any early-finished task has delivered its audio
+                            future = asyncio.run_coroutine_threadsafe(
+                                self._end_turn_without_task(),
+                                loop=self.conn.loop,
+                            )
+                            future.result(timeout=self.tts_timeout + 1)
                     except Exception as e:
                         logger.bind(tag=TAG).error(f"Failed to end TTS session: {str(e)}")
                         continue
@@ -190,6 +213,57 @@ class TTSProvider(TTSProviderBase):
                     f"Failed to process TTS text: {str(e)}, type: {type(e).__name__}, stack: {traceback.format_exc()}"
                 )
                 continue
+
+    IDLE_FINISH_SECONDS = 20  # finish a waiting task well before Bailian's 23s limit
+
+    async def _speak(self, text):
+        """Send text, starting a task first if none is open."""
+        if not (self._task_open and self.activate_session and self.ws):
+            if self._task_open:
+                logger.bind(tag=TAG).warning("TTS task ended unexpectedly; starting a new one")
+            # One task at a time per connection: let a finishing task complete
+            if not self._task_done.is_set():
+                try:
+                    await asyncio.wait_for(self._task_done.wait(), timeout=self.tts_timeout)
+                except asyncio.TimeoutError:
+                    logger.bind(tag=TAG).warning("Previous TTS task did not finish in time")
+            self._task_id = uuid.uuid4().hex
+            await self.start_session(self._task_id)
+            # continue-task is allowed only after task-started
+            await asyncio.wait_for(self._task_ready.wait(), timeout=self.tts_timeout)
+            if not self.activate_session:
+                raise RuntimeError("Bailian TTS task failed to start")
+            self._task_open = True
+            self._last_text_time = time.monotonic()
+            asyncio.create_task(self._idle_watchdog(self._task_id))
+        await self.text_to_speak(text, None)
+        self._last_text_time = time.monotonic()
+
+    async def _finish_early(self, reason):
+        """finish-task before a pause: Bailian synthesizes the buffered text and the
+        task ends cleanly instead of timing out. The turn's playback continues."""
+        if not (self._task_open and self._task_id):
+            return
+        self._task_open = False
+        self._early_finished_ids.add(self._task_id)
+        logger.bind(tag=TAG).debug(f"Finishing TTS task early: {reason}")
+        await self.finish_session(self._task_id)
+
+    async def _idle_watchdog(self, task_id):
+        while self._task_open and self._task_id == task_id:
+            await asyncio.sleep(1)
+            idle = time.monotonic() - self._last_text_time
+            if self._task_open and self._task_id == task_id and idle > self.IDLE_FINISH_SECONDS:
+                await self._finish_early(f"no text for {idle:.0f}s")
+                return
+
+    async def _end_turn_without_task(self):
+        if not self._task_done.is_set():
+            try:
+                await asyncio.wait_for(self._task_done.wait(), timeout=self.tts_timeout)
+            except asyncio.TimeoutError:
+                logger.bind(tag=TAG).warning("Early-finished TTS task did not finish in time")
+        self._process_before_stop_play_files()
 
     async def text_to_speak(self, text, _):
         """Send text to the TTS service for synthesis"""
@@ -211,7 +285,7 @@ class TTSProvider(TTSProviderBase):
                         continue_task_message = {
                             "header": {
                                 "action": "continue-task",
-                                "task_id": self.conn.sentence_id,
+                                "task_id": self._task_id,
                                 "streaming": "duplex",
                             },
                             "payload": {"input": {"text": txt}},
@@ -237,9 +311,6 @@ class TTSProvider(TTSProviderBase):
             if self.activate_session:
                 await self.close()
 
-            # Set the session active flag
-            self.activate_session = True
-
             # Ensure the connection is available
             await self._ensure_connection()
 
@@ -247,6 +318,12 @@ class TTSProvider(TTSProviderBase):
             if self._monitor_task is None or self._monitor_task.done():
                 logger.bind(tag=TAG).debug("Starting monitor task...")
                 self._monitor_task = asyncio.create_task(self._start_monitor_tts_response())
+
+            # Set the session state only now: replacing a stale connection
+            # cancels the old monitor, whose cleanup resets it
+            self.activate_session = True
+            self._task_ready.clear()
+            self._task_done.clear()
 
             # Send the run-task message to start the session
             run_task_message = {
@@ -321,6 +398,21 @@ class TTSProvider(TTSProviderBase):
             self.ws = None
             self.last_active_time = None
     
+    def interrupt(self):
+        """The reply was interrupted: stop the task being synthesized now. The task
+        protocol has no cancel (finish-task synthesizes everything buffered), so drop
+        the connection; the next turn opens a new one."""
+        if self._task_done.is_set() and not self._task_open:
+            return
+        if not (self.conn and self.conn.loop and self.ws):
+            return
+        logger.bind(tag=TAG).info("Interrupted: dropping the TTS task in progress")
+        self._task_open = False
+        self.activate_session = False
+        ws = self.ws
+        # The monitor sees the connection close, clears self.ws and marks the task done
+        asyncio.run_coroutine_threadsafe(ws.close(), self.conn.loop)
+
     async def _cancel_monitor_task(self):
         """Cancel the monitor task"""
         if self._monitor_task and not self._monitor_task.done():
@@ -349,14 +441,14 @@ class TTSProvider(TTSProviderBase):
                             task_id = header.get("task_id")
 
                             # Only handle responses for the currently active session
-                            if task_id and self.conn.sentence_id != task_id:
+                            if task_id and self._task_id != task_id:
                                 if event in ["task-finished", "task-failed"]:
-                                    logger.bind(tag=TAG).debug(f"Received a residual downstream end response, resetting session state ~~")
-                                    self.activate_session = False
+                                    self._early_finished_ids.discard(task_id)
                                 continue
 
                             if event == "task-started":
                                 logger.bind(tag=TAG).debug("TTS task started successfully~")
+                                self._task_ready.set()
                             elif event == "result-generated":
                                 output = data.get("payload", {}).get("output", {})
                                 if output.get("type") == "sentence-begin":
@@ -369,13 +461,24 @@ class TTSProvider(TTSProviderBase):
                             elif event == "task-finished":
                                 logger.bind(tag=TAG).debug("TTS task completed~")
                                 self.activate_session = False
-                                self._process_before_stop_play_files()
+                                self._task_done.set()
+                                if task_id in self._early_finished_ids:
+                                    # Finished early before a pause: the turn goes on
+                                    self._early_finished_ids.discard(task_id)
+                                else:
+                                    self._process_before_stop_play_files()
                             elif event == "task-failed":
                                 error_code = header.get("error_code", "unknown")
                                 error_message = header.get("error_message", "unknown error")
                                 logger.bind(tag=TAG).error(
                                     f"TTS task failed: {error_code} - {error_message}"
                                 )
+                                # Wake a sender waiting for task-started; it sees the task is dead
+                                self.activate_session = False
+                                self._task_open = False
+                                self._early_finished_ids.discard(task_id)
+                                self._task_ready.set()
+                                self._task_done.set()
                                 break
                         except json.JSONDecodeError:
                             logger.bind(tag=TAG).warning("Received an invalid JSON message")
@@ -383,8 +486,8 @@ class TTSProvider(TTSProviderBase):
                         self.opus_encoder.encode_pcm_to_opus_stream(
                             msg, False, callback=self.handle_opus
                         )
-                except websockets.ConnectionClosed:
-                    logger.bind(tag=TAG).warning("WebSocket connection closed")
+                except websockets.ConnectionClosed as e:
+                    logger.bind(tag=TAG).warning(f"WebSocket connection closed: {e}")
                     break
                 except Exception as e:
                     logger.bind(tag=TAG).error(
@@ -402,6 +505,7 @@ class TTSProvider(TTSProviderBase):
         # Clean up references when the monitor task exits
         finally:
             self.activate_session = False
+            self._task_done.set()
             self._monitor_task = None
 
     def audio_to_opus_data_stream(
