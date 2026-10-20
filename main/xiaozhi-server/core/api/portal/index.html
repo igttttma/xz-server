@@ -80,7 +80,17 @@
   #answer_call:not(:disabled) { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 600; animation: ring 1s ease-in-out infinite alternate; }
   @keyframes ring { to { box-shadow: 0 0 0 6px color-mix(in srgb, var(--ok) 25%, transparent); } }
   @media (prefers-reduced-motion: reduce) { #answer_call { animation: none !important; } }
-  .blocked { margin-top: 10px; color: var(--err); font-size: 12px; }
+  .devices { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .devices-head { font-weight: 600; margin-bottom: 8px; }
+  .devices-head .hint { display: inline; margin-left: 6px; }
+  .device { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 10px 12px;
+    margin-top: 6px; border-radius: 8px; }
+  .device.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); cursor: default; }
+  .device > div { flex: 1; min-width: 0; }
+  .device b { display: block; }
+  .device .meta, .device .ua { color: var(--muted); font-size: 12px; }
+  .device .ua { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; }
+  .device .tag { flex: none; font-size: 11px; font-weight: 700; letter-spacing: .04em; color: var(--accent); }
   .upload { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px; border: 1px dashed var(--line); border-radius: 8px; }
   .upload input[type=file] { flex: 1; min-width: 0; }
   .table { overflow-x: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; }
@@ -103,6 +113,15 @@
   tr.playing td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
   tr.playing td.title b::after { content: "  ▶ playing"; color: var(--accent); font-size: 12px; }
   .hint.ok { color: var(--ok); } .hint.err { color: var(--err); }
+  .expr { display: flex; flex-wrap: wrap; gap: 6px; }
+  .expr button.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 14px; }
+  label.check { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 600; cursor: pointer; }
+  label.check input { margin: 0; width: 16px; height: 16px; }
+  label.check:has(input:disabled) { color: var(--muted); cursor: default; }
+  #conv_state { color: var(--muted); }
+  .send { display: flex; gap: 8px; margin-top: 14px; }
+  .send input { flex: 1; min-width: 0; }
 </style>
 </head>
 <body>
@@ -121,7 +140,36 @@
         <button id="end_call" disabled title="Only while the Blimp is calling or in a call">End call</button>
       </div>
     </div>
-    <div class="blocked" id="blocked" hidden></div>
+    <div class="devices" id="devices" hidden>
+      <div class="devices-head">Connected Blimps <span class="hint">Click one to control it</span></div>
+      <div id="device_list"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Avatar</h2>
+    <label>Expression</label>
+    <div class="expr" id="expressions"><span class="empty">Shown when the Blimp is online.</span></div>
+    <div class="controls">
+      <button id="blink" disabled>Blink</button>
+      <label class="check"><input type="checkbox" id="auto_blink" disabled> Blink automatically</label>
+      <label class="check" title="Off: the expression stays until you pick another one"><input type="checkbox" id="auto_recover" disabled> Back to neutral after a few seconds</label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Conversation</h2>
+    <div class="meta" id="conv_state">The Blimp is offline.</div>
+    <div class="controls">
+      <button id="conv_connect" disabled>Connect</button>
+      <button id="conv_disconnect" disabled>Disconnect</button>
+      <button id="conv_start" class="primary" disabled title="Same as saying “Hey Blimp”">Start conversation</button>
+      <button id="conv_interrupt" disabled title="Stop the AI's current reply">Interrupt AI</button>
+    </div>
+    <form class="send" id="conv_send">
+      <input type="text" id="conv_text" maxlength="1000" autocomplete="off" placeholder="Message to the AI, as if the user said it">
+      <button class="primary" id="conv_send_btn" disabled>Send</button>
+    </form>
   </section>
 
   <section>
@@ -400,18 +448,21 @@ function renderBlimp() {
   const s = blimp.state || {};
   $("blimp_dot").className = `dot${blimp.online ? " on" : ""}`;
   $("blimp_title").textContent = blimp.online ? (ACTIVITY[s.activity] || ACTIVITY.idle)(s) : "Blimp is offline";
+  const others = (blimp.devices || []).length;
   $("blimp_meta").textContent = blimp.online
-    ? `Online · device ${blimp.device_id} · connected ${ago(blimp.connected_at)}`
-    : "Start the Blimp client; it connects to this server on its own.";
+    ? `Online · ${deviceName(s.client)} · device ${blimp.device_id} · connected ${ago(blimp.connected_at)}`
+    : blimp.device_id && others
+      ? `Device ${blimp.device_id} went offline. Pick another Blimp below.`
+      : blimp.device_id
+        ? `Device ${blimp.device_id} went offline; it is controlled again when it reconnects.`
+        : "Start the Blimp client; it connects to this server on its own.";
   const p = blimp.online ? s.playback : null;
   renderPlayer(p);
-  const blocked = blimp.blocked || [];
   $("answer_call").disabled = $("decline_call").disabled = !(blimp.online && s.call === "ringing");
   $("end_call").disabled = !(blimp.online && (s.call === "calling" || s.call === "in_call"));
-  $("blocked").hidden = !blocked.length;
-  $("blocked").textContent = blocked.length
-    ? `Blocked (only one Blimp per server): ${blocked.map((b) => `${b.device_id}, ${ago(b.at)}`).join("; ")}`
-    : "";
+  renderDevices();
+  renderAvatar();
+  renderConversation();
   for (const btn of document.querySelectorAll("[data-play]")) btn.disabled = !blimp.online;
   for (const row of document.querySelectorAll(".clip")) {
     row.classList.toggle("playing", !!p && p.id === row.dataset.id && ["playing", "loading", "paused"].includes(p.status));
@@ -498,6 +549,130 @@ for (const [id, [route, doing]] of Object.entries(CALL_BUTTONS)) {
     } catch (err) { setStatus(err.message, "err"); }
   };
 }
+
+// ---------- connected Blimps ----------
+// A readable name from the client's User-Agent, e.g. "Android 13 · Pixel 6 ·
+// WebView 109" or "Electron 33 · Windows"
+function deviceName(client) {
+  const ua = client?.user_agent || "";
+  if (!ua) return "Unknown client";
+  const os = /Android ([\d.]+)/.exec(ua)?.[0] || (/Windows/.test(ua) ? "Windows" : /Mac OS X/.test(ua) ? "macOS"
+    : /Linux/.test(ua) ? "Linux" : "");
+  const electron = /Electron\/(\d+)/.exec(ua);
+  if (electron) return [`Electron ${electron[1]}`, os].filter(Boolean).join(" · ");
+  const model = /Android [\d.]+; ([^;)]+?)(?: Build\/[^;)]*)?[;)]/.exec(ua)?.[1];
+  const chrome = /Chrome\/(\d+)/.exec(ua)?.[1];
+  const app = /; wv\)/.test(ua) ? `WebView ${chrome}` : chrome ? `Chrome ${chrome}` : "";
+  return [os, model, app].filter(Boolean).join(" · ") || ua.slice(0, 60);
+}
+
+function renderDevices() {
+  const list = blimp.devices || [];
+  $("devices").hidden = !list.length;
+  const box = $("device_list");
+  box.innerHTML = "";
+  for (const d of list) {
+    const selected = d.device_id === blimp.device_id;
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `device${selected ? " selected" : ""}`;
+    row.innerHTML = `<i class="dot on"></i><div><b></b><div class="meta"></div><div class="ua"></div></div><span class="tag"></span>`;
+    row.querySelector("b").textContent = deviceName(d.client);
+    row.querySelector(".meta").textContent = `Device ${d.device_id} · connected ${ago(d.connected_at)}${d.activity ? ` · ${d.activity.replace("_", " ")}` : ""}`;
+    row.querySelector(".ua").textContent = d.client?.user_agent || "";
+    row.querySelector(".ua").title = d.client?.user_agent || "";
+    row.querySelector(".tag").textContent = selected ? "CONTROLLING" : "";
+    if (!selected) row.onclick = async () => {
+      try {
+        await api("/portal/api/blimp/select", { method: "POST", body: JSON.stringify({ device_id: d.device_id }) });
+        setStatus(`Now controlling ${deviceName(d.client)}`, "ok");
+      } catch (err) { setStatus(err.message, "err"); }
+    };
+    box.appendChild(row);
+  }
+}
+
+// ---------- avatar (like the client's Debug panel) ----------
+const EXPRESSION_LABELS = { None: "Neutral", IntenseFocus: "Intense focus" };
+let shownExpressions = "";
+
+function renderAvatar() {
+  const a = blimp.online ? blimp.state?.avatar : null;
+  const box = $("expressions");
+  const list = a?.expressions || [];
+  // Rebuilt only when the list changes; Neutral (None) first
+  if (list.join() !== shownExpressions) {
+    shownExpressions = list.join();
+    box.innerHTML = list.length ? "" : '<span class="empty">Shown when the Blimp is online.</span>';
+    for (const name of ["None", ...list.filter((n) => n !== "None")]) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.dataset.expression = name;
+      btn.textContent = EXPRESSION_LABELS[name] || name;
+      btn.onclick = () => avatarCommand({ expression: name });
+      box.appendChild(btn);
+    }
+  }
+  for (const btn of box.querySelectorAll("button")) {
+    btn.classList.toggle("active", btn.dataset.expression === (a?.expression || "None"));
+  }
+  $("blink").disabled = $("auto_blink").disabled = $("auto_recover").disabled = !a;
+  if (a) {
+    $("auto_blink").checked = a.auto_blink !== false;
+    $("auto_recover").checked = a.auto_recover !== false;
+  }
+}
+
+async function avatarCommand(body) {
+  try { await api("/portal/api/blimp/avatar", { method: "POST", body: JSON.stringify(body) }); }
+  catch (err) { setStatus(err.message, "err"); }
+}
+$("blink").onclick = () => avatarCommand({ blink: true });
+$("auto_blink").onchange = (e) => avatarCommand({ auto_blink: e.target.checked });
+$("auto_recover").onchange = (e) => avatarCommand({ auto_recover: e.target.checked });
+
+// ---------- conversation (like the client's Chat panel) ----------
+const CONVERSATION = { idle: "Idle", connecting: "Starting…", listening: "Listening", speaking: "The AI is speaking" };
+
+function renderConversation() {
+  const s = blimp.state || {};
+  const online = blimp.online;
+  const inCall = ["ringing", "calling", "in_call"].includes(s.call);
+  const connected = online && s.connected === true;
+  let text = "The Blimp is offline.";
+  if (online && inCall) text = "A video call has the Blimp's microphone.";
+  else if (online) {
+    text = `${connected ? "Connected to the server" : "Not connected to the server"} · ${CONVERSATION[s.conversation] || s.conversation || "Idle"}`;
+  }
+  $("conv_state").textContent = text;
+  $("conv_connect").disabled = !online || inCall || connected;
+  $("conv_disconnect").disabled = !connected;
+  $("conv_start").disabled = !online || inCall;
+  $("conv_interrupt").disabled = !connected;
+  $("conv_send_btn").disabled = !online || inCall || !$("conv_text").value.trim();
+}
+
+async function conversationCommand(body, done) {
+  try {
+    const res = await api("/portal/api/blimp/conversation", { method: "POST", body: JSON.stringify(body) });
+    setStatus(res.done ? done : res.message || "", res.done ? "ok" : "");
+    return res.done;
+  } catch (err) { setStatus(err.message, "err"); return false; }
+}
+$("conv_connect").onclick = () => conversationCommand({ action: "connect" }, "Connecting the Blimp to the server");
+$("conv_disconnect").onclick = () => conversationCommand({ action: "disconnect" }, "Disconnecting the Blimp");
+$("conv_start").onclick = () => conversationCommand({ action: "start" }, "Starting a conversation, as if “Hey Blimp” was said");
+$("conv_interrupt").onclick = () => conversationCommand({ action: "interrupt" }, "Interrupted the AI");
+$("conv_text").oninput = renderConversation;
+$("conv_send").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("conv_text").value.trim();
+  if (!text) return;
+  if (await conversationCommand({ action: "send_text", text }, `Sent: “${text}”`)) {
+    $("conv_text").value = "";
+    renderConversation();
+  }
+};
 
 $("np_stop").onclick = async () => {
   try { await api("/portal/api/blimp/stop", { method: "POST" }); }

@@ -347,18 +347,31 @@ class PortalHandler:
     def _control(self):
         return self.ws_server.blimp_control
 
-    async def _on_blimp_connect(self):
-        await self._push_blimp_settings()
-        await self._push_videos()
+    async def _on_blimp_connect(self, send):
+        """A Blimp connected: send it its settings and the video list."""
+        await send(self._settings_message())
+        await send(self._videos_message())
+
+    def _settings_message(self) -> dict:
+        """Client-side settings; the Blimp applies them the next time it starts listening."""
+        return {"type": "settings", "barge_in": bool(self.config.get("barge_in", False))}
 
     async def _push_blimp_settings(self):
-        """Client-side settings; the Blimp applies them the next time it starts listening."""
-        await self._control.send({"type": "settings", "barge_in": bool(self.config.get("barge_in", False))})
+        await self._control.broadcast(self._settings_message())
 
     async def handle_get_blimp(self, request: web.Request):
         if (denied := self._guard(request)) is not None:
             return denied
         return web.json_response(self._control.snapshot())
+
+    async def handle_blimp_select(self, request: web.Request):
+        """Choose which connected Blimp the portal controls: {device_id}."""
+        if (denied := self._guard(request, mutating=True)) is not None:
+            return denied
+        device_id = (await self._json_body(request)).get("device_id")
+        if not isinstance(device_id, str) or not await self._control.select(device_id):
+            return web.json_response({"error": "That Blimp is not connected"}, status=409)
+        return web.json_response({"ok": True})
 
     async def handle_blimp_events(self, request: web.Request):
         """Server-sent events: the Blimp snapshot on every change."""
@@ -446,6 +459,59 @@ class PortalHandler:
     async def handle_blimp_end_call(self, request: web.Request):
         return await self._call_command(request, "end_call", ("calling", "in_call"), "No call to end")
 
+    async def _json_body(self, request: web.Request) -> dict:
+        try:
+            body = await request.json()
+        except Exception:
+            return {}
+        return body if isinstance(body, dict) else {}
+
+    async def handle_blimp_avatar(self, request: web.Request):
+        """Avatar controls, like the client's Debug panel: any of
+        {expression: name | "None", blink: true, auto_blink: bool, auto_recover: bool}."""
+        body = await self._json_body(request)
+        message = {"type": "avatar"}
+        if "expression" in body:
+            expressions = (self._control.state.get("avatar") or {}).get("expressions") or []
+            if body["expression"] not in expressions:
+                return web.json_response({"error": "Unknown expression"}, status=400)
+            message["expression"] = body["expression"]
+        if body.get("blink") is True:
+            message["blink"] = True
+        for key in ("auto_blink", "auto_recover"):
+            if key in body:
+                if not isinstance(body[key], bool):
+                    return web.json_response({"error": f"{key} must be true or false"}, status=400)
+                message[key] = body[key]
+        if len(message) == 1:
+            return web.json_response({"error": "Nothing to change"}, status=400)
+        return await self._state_command(request, message, lambda s: True, "")
+
+    async def handle_blimp_conversation(self, request: web.Request):
+        """Conversation controls, like the client's Chat panel:
+        {action: connect | disconnect | start | interrupt | send_text, text}. "start" is
+        the wake word without saying it."""
+        body = await self._json_body(request)
+        action = body.get("action")
+        message = {"type": "conversation", "action": action}
+        if action == "send_text":
+            text = body.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return web.json_response({"error": "Type a message first"}, status=400)
+            if len(text) > 1000:
+                return web.json_response({"error": "The message is too long (1000 characters at most)"}, status=400)
+            message["text"] = text.strip()
+        elif action not in ("connect", "disconnect", "start", "interrupt"):
+            return web.json_response({"error": "Unknown action"}, status=400)
+        # A ringing or active video call owns the Blimp's microphone
+        needs_mic = action in ("connect", "start", "send_text")
+        return await self._state_command(
+            request,
+            message,
+            lambda s: not (needs_mic and s.get("call") in ("ringing", "calling", "in_call")),
+            "The Blimp is in a video call",
+        )
+
     # ---------- media libraries (audio and video) ----------
 
     def _library(self, request: web.Request):
@@ -463,13 +529,16 @@ class PortalHandler:
     def _http_port(self) -> int:
         return int(self.config["server"].get("http_port", 8003))
 
-    async def _push_videos(self):
-        """Send the video list to the Blimp, which prefetches what it lacks and drops the rest."""
+    def _videos_message(self) -> dict:
+        """The video list; each Blimp prefetches what it lacks and drops the rest."""
         videos = [
             {k: e[k] for k in ("id", "title", "mime", "size")} | {"path": self._blimp_path("video", e["id"])}
             for e in self.video.list()
         ]
-        await self._control.send({"type": "videos", "videos": videos, "http_port": self._http_port})
+        return {"type": "videos", "videos": videos, "http_port": self._http_port}
+
+    async def _push_videos(self):
+        await self._control.broadcast(self._videos_message())
 
     async def handle_list_media(self, request: web.Request):
         if (denied := self._guard(request)) is not None:
