@@ -149,7 +149,7 @@ class PortalHandler:
             return web.Response(
                 status=401,
                 text="Portal is local-only. Set portal.password in data/.config.yaml for remote access.",
-                headers={"WWW-Authenticate": 'Basic realm="xiaozhi portal"'},
+                headers={"WWW-Authenticate": 'Basic realm="BlimpMate portal"'},
             )
         # A custom header forces a CORS preflight, so other sites can't post here
         if mutating and request.headers.get("X-Portal") != "1":

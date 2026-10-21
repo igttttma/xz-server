@@ -121,17 +121,12 @@ module_test:
 
 # Wake words, used to recognize whether the user said a wake word or speech content
 wakeup_words:
-  - "Hi XiaoZhi"
-  - "Hey there"
-  - "Hello XiaoZhi"
-  - "Xiao Ai"
-  - "Hi XiaoXin"
-  - "Hi XiaoXin"
-  - "Xiao Mei"
-  - "Xiao Long"
-  - "Meow Meow"
-  - "Xiao Bin"
-  - "Xiao Bing"
+  - "Hey Blimp"
+  - "Hi Blimp"
+  - "Hello Blimp"
+  - "Hey BlimpMate"
+  - "Hi BlimpMate"
+  - "Hello BlimpMate"
 # MCP access point address, in the form: ws://your-mcp-access-point-ip-or-domain:port/mcp/?token=your-token
 # Detailed tutorial https://github.com/xinnan-tech/xiaozhi-esp32-server/blob/main/docs/mcp-endpoint-integration.md
 mcp_endpoint: your access-point websocket address
@@ -244,7 +239,7 @@ prompt: |
 prompt_template: agent-base-prompt.txt
 
 # Reply on system errors
-system_error_response: "Master, XiaoZhi is a bit busy right now. Let's try again later."
+system_error_response: "Sorry, BlimpMate is a bit busy right now. Let's try again in a moment."
 
 # Closing prompt
 end_prompt:

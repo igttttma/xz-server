@@ -672,4 +672,4 @@ def get_system_error_response(config: dict) -> str:
     Returns:
         str: reply used when a system error occurs
     """
-    return config.get("system_error_response", "Master, XiaoZhi is a bit busy right now. Let's try again later.")
+    return config.get("system_error_response", "Sorry, BlimpMate is a bit busy right now. Let's try again in a moment.")
