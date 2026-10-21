@@ -34,6 +34,10 @@ from plugins_func.register import all_function_registry
 TAG = __name__
 
 CONFIG_PATH = get_project_dir() + "data/.config.yaml"
+# The shipped defaults (data/.config.yaml overrides them)
+DEFAULT_CONFIG_PATH = get_project_dir() + "config.yaml"
+# An edit value that removes the key from data/.config.yaml (back to the default)
+REMOVE = object()
 MEMORY_PATH = get_project_dir() + "data/.memory.yaml"
 PAGE_PATH = os.path.join(os.path.dirname(__file__), "portal", "index.html")
 
@@ -87,7 +91,14 @@ def _add(node, key, value):
 
 
 def _set_in(doc, path, value):
-    """Set a nested key in a ruamel document, creating maps as needed."""
+    """Set a nested key in a ruamel document, creating maps as needed; REMOVE deletes it."""
+    if value is REMOVE:
+        for key in path[:-1]:
+            doc = doc.get(key)
+            if doc is None:
+                return
+        doc.pop(path[-1], None)
+        return
     for key in path[:-1]:
         if doc.get(key) is None:
             _add(doc, key, CommentedMap())
@@ -184,6 +195,7 @@ class PortalHandler:
             },
             "voice": tts.get("voice", ""),
             "prompt": self.config.get("prompt", ""),
+            "default_prompt": self._default_prompt(),
             "memory_enabled": self._selected("Memory") == MEMORY_ON,
             "tools_supported": "functions" in intent,
             "tools": tools,
@@ -192,6 +204,14 @@ class PortalHandler:
             "max_tokens": llm.get("max_tokens", 500),
             "idle_timeout": self.config.get("close_connection_no_voice_time", 120),
         }
+
+    def _default_prompt(self) -> str:
+        """The persona prompt shipped in config.yaml, trimmed."""
+        try:
+            with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as f:
+                return str((yaml.safe_load(f) or {}).get("prompt", "")).replace("\r\n", "\n").strip()
+        except (OSError, yaml.YAMLError):
+            return ""
 
     def _validate(self, body: dict) -> list:
         """Turn a (partial) settings payload into [(path, value)] edits."""
@@ -227,7 +247,11 @@ class PortalHandler:
             prompt = str(body["prompt"]).replace("\r\n", "\n").strip()
             if not prompt:
                 raise ValueError("persona prompt is required")
-            edits.append((("prompt",), LiteralScalarString(prompt + "\n")))
+            if prompt == self._default_prompt():
+                # The default: drop the override so later changes to the default apply
+                edits.append((("prompt",), REMOVE))
+            else:
+                edits.append((("prompt",), LiteralScalarString(prompt + "\n")))
         if "memory_enabled" in body:
             if body["memory_enabled"]:
                 edits.append((("selected_module", "Memory"), MEMORY_ON))

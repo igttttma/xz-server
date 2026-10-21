@@ -120,6 +120,8 @@
   label.check input { margin: 0; width: 16px; height: 16px; }
   label.check:has(input:disabled) { color: var(--muted); cursor: default; }
   #conv_state { color: var(--muted); }
+  .label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+  .label-row label { margin: 0; }
   .send { display: flex; gap: 8px; margin-top: 14px; }
   .send input { flex: 1; min-width: 0; }
 
@@ -293,7 +295,10 @@
 
   <section>
     <h2>Persona</h2>
-    <label for="prompt">System prompt</label>
+    <div class="label-row">
+      <label for="prompt">System prompt</label>
+      <button type="button" class="small" id="prompt_reset" title="Put the default persona (config.yaml) in the box; Save applies it">Reset to default</button>
+    </div>
     <textarea id="prompt" spellcheck="false"></textarea>
     <div class="hint">The server adds time, location, weather and tool rules around this (agent-base-prompt.txt).</div>
   </section>
@@ -441,6 +446,7 @@ function updateDirty() {
   if (n) setStatus(`${n} unsaved change${n > 1 ? "s" : ""}`);
   else if (!$("status").className) setStatus("");
   $("unsaved_dot").hidden = n === 0;
+  $("prompt_reset").disabled = !loaded?.default_prompt || $("prompt").value.trim() === loaded.default_prompt;
 }
 
 async function loadMemory() {
@@ -480,6 +486,12 @@ $("save").onclick = async () => {
   }
 };
 $("reset").onclick = () => { setStatus(""); render(loaded); };
+// Fills in the default persona; like any change here, Save applies it
+$("prompt_reset").onclick = () => {
+  $("prompt").value = loaded.default_prompt;
+  $("status").className = "";
+  updateDirty();
+};
 document.addEventListener("input", () => { $("status").className = ""; updateDirty(); });
 document.addEventListener("change", () => { $("status").className = ""; updateDirty(); });
 
