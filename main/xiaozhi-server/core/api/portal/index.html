@@ -122,12 +122,48 @@
   #conv_state { color: var(--muted); }
   .send { display: flex; gap: 8px; margin-top: 14px; }
   .send input { flex: 1; min-width: 0; }
+
+  /* ---- tabs: Live (acts at once) vs Save (needs the Save button) ---- */
+  :root { --live: #1f8a4c; --save: #b26a00; }
+  @media (prefers-color-scheme: dark) { :root { --live: #4cc27f; --save: #f0b429; } }
+  .tabs { display: flex; gap: 4px; margin: 16px 0 16px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .tabs button { display: inline-flex; align-items: center; gap: 8px; border: 0; border-bottom: 3px solid transparent;
+    border-radius: 0; background: none; padding: 10px 14px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+  .tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+  .mode { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 2px 7px;
+    border-radius: 999px; border: 1px solid currentColor; }
+  .mode.live { color: var(--live); }
+  .mode.save { color: var(--save); }
+  .unsaved { width: 8px; height: 8px; border-radius: 50%; background: var(--save); }
+  .tab { display: none; }
+  body[data-tab="live"] #tab_live, body[data-tab="media"] #tab_media, body[data-tab="settings"] #tab_settings { display: block; }
+  .banner { margin: 0 0 16px; padding: 10px 14px; border-radius: 8px; border-left: 4px solid; font-size: 13px; }
+  .banner.live { border-color: var(--live); background: color-mix(in srgb, var(--live) 10%, transparent); }
+  .banner.save { border-color: var(--save); background: color-mix(in srgb, var(--save) 12%, transparent); }
+  /* The Save bar belongs to the settings tab only */
+  body:not([data-tab="settings"]) .bar { display: none; }
+  body:not([data-tab="settings"]) main { padding-bottom: 32px; }
+  .bar { border-top: 2px solid var(--save); }
+  /* Feedback for live actions (the settings tab reports in its Save bar) */
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); max-width: calc(100% - 32px);
+    padding: 10px 16px; border-radius: 8px; background: var(--text); color: var(--bg); font-size: 13px;
+    opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 10; }
+  #toast.show { opacity: .95; }
+  #toast.err { background: var(--err); color: #fff; }
+  body[data-tab="settings"] #toast { bottom: 80px; }
 </style>
 </head>
 <body>
 <main>
   <h1>Server portal</h1>
-  <p class="sub">Live Blimp status, audio and video, then server settings. Settings are saved to <code>data/.config.yaml</code> and apply to new connections; reconnect the client after saving.</p>
+  <nav class="tabs" role="tablist">
+    <button type="button" role="tab" data-tab="live"><span class="mode live">Live</span> Blimp</button>
+    <button type="button" role="tab" data-tab="media"><span class="mode live">Live</span> Media</button>
+    <button type="button" role="tab" data-tab="settings"><span class="mode save">Save</span> Server settings<i class="unsaved" id="unsaved_dot" hidden title="Unsaved changes"></i></button>
+  </nav>
+
+  <div class="tab" id="tab_live" data-tab="live">
+  <p class="banner live">Everything here acts on the selected Blimp right away. Nothing to save; a restart of the Blimp resets the avatar switches.</p>
 
   <section>
     <h2>Blimp</h2>
@@ -158,7 +194,7 @@
   </section>
 
   <section>
-    <h2>Conversation</h2>
+    <h2>Conversation control</h2>
     <div class="meta" id="conv_state">The Blimp is offline.</div>
     <div class="controls">
       <button id="conv_connect" disabled>Connect</button>
@@ -176,7 +212,7 @@
     <h2>Now playing</h2>
     <div class="player-head">
       <span class="kind" id="np_kind">IDLE</span>
-      <div><b id="np_title">Nothing playing</b><div class="meta" id="np_meta">Press Play now on a clip below.</div></div>
+      <div><b id="np_title">Nothing playing</b><div class="meta" id="np_meta">Press Play now on a clip in Media.</div></div>
     </div>
     <div class="progress" id="np_progress"><i id="np_bar"></i></div>
     <div class="times"><span id="np_pos">0:00</span><span id="np_dur">0:00</span></div>
@@ -186,6 +222,10 @@
       <label class="loop" title="Repeat the clip; also applies to the next clips you play"><input type="checkbox" id="np_loop" disabled> Loop</label>
     </div>
   </section>
+  </div>
+
+  <div class="tab" id="tab_media" data-tab="media">
+  <p class="banner live">Uploads and deletes happen right away; Play now plays on the selected Blimp. Every Blimp keeps a copy of the videos.</p>
 
   <section>
     <h2>Audio server</h2>
@@ -216,6 +256,10 @@
       </table>
     </div>
   </section>
+  </div>
+
+  <div class="tab" id="tab_settings" data-tab="settings">
+  <p class="banner save">Changes here take effect only after <b>Save</b> (bar at the bottom). They are written to <code>data/.config.yaml</code>, shared by every Blimp, and apply from each Blimp's next conversation.</p>
 
   <section>
     <h2>Platform</h2>
@@ -255,7 +299,7 @@
   </section>
 
   <section>
-    <h2>Conversation</h2>
+    <h2>Conversation behavior</h2>
     <div class="row">
       <div>
         <label for="wake_greeting">Wake greeting</label>
@@ -276,7 +320,7 @@
     <div class="switch barge">
       <input id="barge_in" type="checkbox">
       <div><b style="font-family:inherit">Allow interrupting the AI</b>
-        <span>The Blimp keeps listening while the AI speaks; when you say something, the AI stops and answers that instead. Applies from the next conversation (after the next “Hey Blimp”). Relies on the Blimp's echo cancellation: if the AI interrupts itself, turn this off.</span></div>
+        <span>The Blimp keeps listening while the AI speaks; when you say something, the AI stops and answers that instead. Relies on the Blimp's echo cancellation: if the AI interrupts itself, turn this off.</span></div>
     </div>
   </section>
 
@@ -292,8 +336,10 @@
       <div><b style="font-family:inherit">Remember across sessions</b>
         <span>At the end of each session the LLM summarizes it; the summary is added to the next session's prompt. Stored locally in data/.memory.yaml.</span></div>
     </div>
+    <div class="hint">Clear (below) deletes a saved summary right away, without Save.</div>
     <div id="memory"></div>
   </section>
+  </div>
 </main>
 
 <div class="bar"><div>
@@ -302,12 +348,38 @@
   <button id="save" class="primary">Save</button>
 </div></div>
 
+<div id="toast" role="status"></div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const FIELDS = ["asr_model", "llm_model", "tts_model", "voice", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "memory_enabled"];
 let loaded = null;
 
 function setStatus(text, kind = "") { const s = $("status"); s.textContent = text; s.className = kind; }
+
+// Feedback for live actions: a short message at the bottom of the page
+function toast(text, kind = "") {
+  if (!text) return;
+  const t = $("toast");
+  t.textContent = text;
+  t.className = `show${kind === "err" ? " err" : ""}`;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { t.className = kind === "err" ? "err" : ""; }, 3500);
+}
+
+// ---------- tabs (remembered in the address: #live, #media, #settings) ----------
+const TABS = ["live", "media", "settings"];
+function showTab(name) {
+  if (!TABS.includes(name)) name = "live";
+  document.body.dataset.tab = name;
+  for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === name));
+  if (location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
+}
+for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => showTab(b.dataset.tab);
+addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+showTab(location.hash.slice(1));
+// Leaving with unsaved settings: the browser asks first
+addEventListener("beforeunload", (e) => { if (Object.keys(changes()).length) e.preventDefault(); });
 
 async function api(path, options = {}) {
   const res = await fetch(path, { ...options, headers: { "X-Portal": "1", "Content-Type": "application/json", ...(options.headers || {}) } });
@@ -368,6 +440,7 @@ function updateDirty() {
   $("save").disabled = $("reset").disabled = n === 0;
   if (n) setStatus(`${n} unsaved change${n > 1 ? "s" : ""}`);
   else if (!$("status").className) setStatus("");
+  $("unsaved_dot").hidden = n === 0;
 }
 
 async function loadMemory() {
@@ -399,7 +472,7 @@ $("save").onclick = async () => {
   try {
     const res = await api("/portal/api/settings", { method: "POST", body: JSON.stringify(body) });
     render(res.settings);
-    setStatus("Saved. Reconnect the client to use the new settings.", "ok");
+    setStatus("Saved. Applies from each Blimp's next conversation.", "ok");
   } catch (err) {
     if (err.data?.settings) render(err.data.settings);
     setStatus(err.message, "err");
@@ -545,8 +618,8 @@ for (const [id, [route, doing]] of Object.entries(CALL_BUTTONS)) {
   $(id).onclick = async () => {
     try {
       const res = await api(`/portal/api/blimp/${route}`, { method: "POST" });
-      setStatus(res.done ? `${doing} the call on the Blimp` : res.message || "", res.done ? "ok" : "");
-    } catch (err) { setStatus(err.message, "err"); }
+      toast(res.done ? `${doing} the call on the Blimp` : res.message || "", res.done ? "ok" : "");
+    } catch (err) { toast(err.message, "err"); }
   };
 }
 
@@ -585,8 +658,8 @@ function renderDevices() {
     if (!selected) row.onclick = async () => {
       try {
         await api("/portal/api/blimp/select", { method: "POST", body: JSON.stringify({ device_id: d.device_id }) });
-        setStatus(`Now controlling ${deviceName(d.client)}`, "ok");
-      } catch (err) { setStatus(err.message, "err"); }
+        toast(`Now controlling ${deviceName(d.client)}`, "ok");
+      } catch (err) { toast(err.message, "err"); }
     };
     box.appendChild(row);
   }
@@ -625,7 +698,7 @@ function renderAvatar() {
 
 async function avatarCommand(body) {
   try { await api("/portal/api/blimp/avatar", { method: "POST", body: JSON.stringify(body) }); }
-  catch (err) { setStatus(err.message, "err"); }
+  catch (err) { toast(err.message, "err"); }
 }
 $("blink").onclick = () => avatarCommand({ blink: true });
 $("auto_blink").onchange = (e) => avatarCommand({ auto_blink: e.target.checked });
@@ -655,9 +728,9 @@ function renderConversation() {
 async function conversationCommand(body, done) {
   try {
     const res = await api("/portal/api/blimp/conversation", { method: "POST", body: JSON.stringify(body) });
-    setStatus(res.done ? done : res.message || "", res.done ? "ok" : "");
+    toast(res.done ? done : res.message || "", res.done ? "ok" : "");
     return res.done;
-  } catch (err) { setStatus(err.message, "err"); return false; }
+  } catch (err) { toast(err.message, "err"); return false; }
 }
 $("conv_connect").onclick = () => conversationCommand({ action: "connect" }, "Connecting the Blimp to the server");
 $("conv_disconnect").onclick = () => conversationCommand({ action: "disconnect" }, "Disconnecting the Blimp");
@@ -676,19 +749,19 @@ $("conv_send").onsubmit = async (e) => {
 
 $("np_stop").onclick = async () => {
   try { await api("/portal/api/blimp/stop", { method: "POST" }); }
-  catch (err) { setStatus(err.message, "err"); }
+  catch (err) { toast(err.message, "err"); }
 };
 $("np_pause").onclick = async () => {
   const paused = blimp.state?.playback?.status === "paused";
   try {
     const res = await api(`/portal/api/blimp/${paused ? "resume" : "pause"}`, { method: "POST" });
-    if (!res.done && res.message) setStatus(res.message);
-  } catch (err) { setStatus(err.message, "err"); }
+    if (!res.done && res.message) toast(res.message);
+  } catch (err) { toast(err.message, "err"); }
 };
 $("np_loop").onchange = async (e) => {
   loopPending = true;
   try { await api("/portal/api/blimp/loop", { method: "POST", body: JSON.stringify({ loop: e.target.checked }) }); }
-  catch (err) { setStatus(err.message, "err"); e.target.checked = s_loop(); }
+  catch (err) { toast(err.message, "err"); e.target.checked = s_loop(); }
   loopPending = false;
 };
 
