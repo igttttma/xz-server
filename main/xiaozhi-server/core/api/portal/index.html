@@ -105,8 +105,8 @@
   td.cache.cached { color: var(--ok); }
   td.cache.failed { color: var(--err); white-space: normal; min-width: 110px; }
   td.cache.loading { color: var(--muted); }
-  .bar { display: block; width: 90px; height: 4px; margin-top: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
-  .bar i { display: block; height: 100%; background: var(--accent); }
+  .cache-bar { display: block; width: 90px; height: 4px; margin-top: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .cache-bar i { display: block; height: 100%; background: var(--accent); }
   td.title small { display: block; color: var(--muted); font-weight: 400; font-size: 11px; }
   td.actions { text-align: right; }
   td.actions button + button { margin-left: 6px; }
@@ -519,7 +519,7 @@ function renderCache() {
     else text = c.received ? `Queued (${pctOf(c)}%)` : "Queued";
     cell.className = `cache ${kind}`;
     cell.textContent = text;
-    if (pct !== null) cell.insertAdjacentHTML("beforeend", `<span class="bar"><i style="width:${pct}%"></i></span>`);
+    if (pct !== null) cell.insertAdjacentHTML("beforeend", `<span class="cache-bar"><i style="width:${pct}%"></i></span>`);
   }
 }
 
