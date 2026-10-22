@@ -10,6 +10,7 @@ import websockets
 from typing import Callable, Any
 from config.logger import setup_logging
 from core.utils.tts import MarkdownCleaner
+from core.utils.opus_encoder_utils import OpusEncoderUtils
 from core.utils.alibl_endpoint import build_ws_connect_options, resolve_ws_url
 from core.providers.tts.base import TTSProviderBase
 from core.providers.tts.dto.dto import SentenceType, ContentType, InterfaceType
@@ -539,6 +540,11 @@ class TTSProvider(TTSProviderBase):
             session_id = uuid.uuid4().hex
             # Store audio data
             audio_data = []
+            # Own encoder: this runs in a worker thread while self.opus_encoder may be
+            # encoding a reply, and the shared buffer would mix the two
+            encoder = OpusEncoderUtils(
+                sample_rate=self.conn.sample_rate, channels=1, frame_size_ms=60
+            )
 
             async def _generate_audio():
                 ws = await websockets.connect(
@@ -628,16 +634,20 @@ class TTSProvider(TTSProviderBase):
                     while not task_finished:
                         msg = await ws.recv()
                         if isinstance(msg, (bytes, bytearray)):
-                            self.opus_encoder.encode_pcm_to_opus_stream(
+                            encoder.encode_pcm_to_opus_stream(
                                 msg,
                                 end_of_stream=False,
-                                callback=lambda opus: audio_data.append(opus)
+                                callback=audio_data.append
                             )
                         elif isinstance(msg, str):
                             data = json.loads(msg)
                             header = data.get("header", {})
                             if header.get("event") == "task-finished":
                                 task_finished = True
+                                # Flush the last partial frame, or the clip loses its end
+                                encoder.encode_pcm_to_opus_stream(
+                                    b"", end_of_stream=True, callback=audio_data.append
+                                )
                                 logger.bind(tag=TAG).debug("TTS task completed")
                             elif header.get("event") == "task-failed":
                                 error_code = header.get("error_code", "unknown")

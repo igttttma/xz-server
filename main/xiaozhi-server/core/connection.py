@@ -33,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from core.utils.dialogue import Message, Dialogue
 from core.providers.asr.dto.dto import InterfaceType
 from core.handle.textHandle import handleTextMessage
+from core.handle.helloHandle import prepareWakeGreetings
 from core.providers.tools.unified_tool_handler import UnifiedToolHandler
 from plugins_func.loadplugins import auto_import_modules
 from plugins_func.register import Action, ActionResponse, all_function_registry, module_func_map
@@ -616,6 +617,8 @@ class ConnectionHandler:
             asyncio.run_coroutine_threadsafe(
                 self.tts.open_audio_channels(self), self.loop
             )
+            # Record the wake greetings this voice does not have yet
+            asyncio.run_coroutine_threadsafe(prepareWakeGreetings(self), self.loop)
             if self.need_bind:
                 self.bind_completed_event.set()
                 return
