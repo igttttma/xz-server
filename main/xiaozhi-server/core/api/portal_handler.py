@@ -28,6 +28,7 @@ from ruamel.yaml.scalarstring import LiteralScalarString
 
 from config.config_loader import get_project_dir
 from core.media_library import AUDIO_TYPES, VIDEO_TYPES, MediaLibrary, UploadError
+from core.handle.helloHandle import greeting_file, greeting_signature
 from config.logger import setup_logging
 from plugins_func.register import all_function_registry
 
@@ -637,6 +638,19 @@ class PortalHandler:
             return web.json_response({"error": "The Blimp is offline"}, status=409)
         self.logger.bind(tag=TAG).info(f"Portal: play {library.kind} {entry['id']} on {self._control.device_id}")
         return web.json_response({"ok": True})
+
+    async def handle_blimp_greeting(self, request: web.Request):
+        """A wake greeting clip. Its signed link never changes, so the Blimp caches it."""
+        folder, name = request.match_info["folder"], request.match_info["name"]
+        path = greeting_file(folder, name)
+        sig = request.query.get("sig", "")
+        if path is None or not hmac.compare_digest(sig, greeting_signature(self.config, f"{folder}/{name}")):
+            return web.Response(status=403, text="Link invalid")
+        return web.FileResponse(path, headers={
+            "Content-Type": "audio/wav",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=31536000, immutable",
+        })
 
     async def handle_blimp_media(self, request: web.Request):
         """A file for the Blimp, authorized by a signed link (play command or video list)."""

@@ -94,6 +94,7 @@ class SimpleHttpServer:
                                 web.post("/portal/api/{kind:audio|video}/{id}/play", portal.handle_play_media),
                                 # Signed links for the Blimp; not behind the portal guard
                                 web.get("/blimp/{kind:audio|video}/{id}", portal.handle_blimp_media),
+                                web.get("/blimp/greeting/{folder}/{name}", portal.handle_blimp_greeting),
                             ]
                         )
                 # Add routes

@@ -1,4 +1,6 @@
 import os
+import re
+import hmac
 import time
 import json
 import hashlib
@@ -127,10 +129,23 @@ async def prepareWakeGreetings(conn: "ConnectionHandler"):
                 return
 
 
+def greeting_signature(config: dict, rel: str) -> str:
+    """Signs a greeting link; it never expires, so the Blimp can cache the clip"""
+    key = str(config["server"]["auth_key"]).encode()
+    return hmac.new(key, f"greeting/{rel}".encode(), hashlib.sha256).hexdigest()
+
+
+def greeting_file(folder: str, name: str) -> str | None:
+    """The clip a greeting link names (folder = voice hash, name = "<index>.wav")"""
+    if not re.fullmatch(r"[0-9a-f]{32}", folder) or not re.fullmatch(r"\d{1,2}\.wav", name):
+        return None
+    path = os.path.join(WAKE_GREETINGS_DIR, folder, name)
+    return path if os.path.isfile(path) else None
+
+
 async def playWakeupResponse(conn: "ConnectionHandler"):
     """Play a random pre-generated wake greeting in the current TTS voice."""
     conn.just_woken_up = True
-    await send_tts_message(conn, "start")
 
     ready = [
         i for i in range(len(WAKE_GREETINGS))
@@ -142,18 +157,31 @@ async def playWakeupResponse(conn: "ConnectionHandler"):
         # New voice: record the others for the next wakes
         asyncio.create_task(prepareWakeGreetings(conn))
     if not path:
+        await send_tts_message(conn, "start")
         await send_tts_message(conn, "stop", None)
         return
     text = WAKE_GREETINGS[index]
-
-    opus_packets = await audio_to_data(path, use_cache=False)
-    conn.client_abort = False
-
-    # Treat the wake greeting as a new session and generate a new sentence_id so the flow controller resets
-    conn.sentence_id = str(uuid.uuid4().hex)
-
     conn.logger.bind(tag=TAG).info(f"Playing wake greeting: {text}")
-    await sendAudioMessage(conn, SentenceType.FIRST, opus_packets, text)
-    await sendAudioMessage(conn, SentenceType.LAST, [], None)
+
+    if (conn.features or {}).get("greeting_url"):
+        # The Blimp plays the file like a portal audio clip, not through the reply stream
+        rel = f"{os.path.basename(os.path.dirname(path))}/{index}.wav"
+        await conn.websocket.send(json.dumps({
+            "type": "wake_greeting",
+            "text": text,
+            "path": f"/blimp/greeting/{rel}?sig={greeting_signature(conn.config, rel)}",
+            "http_port": int(conn.config["server"].get("http_port", 8003)),
+            "session_id": conn.session_id,
+        }))
+    else:
+        await send_tts_message(conn, "start")
+        opus_packets = await audio_to_data(path, use_cache=False)
+        conn.client_abort = False
+
+        # Treat the wake greeting as a new session and generate a new sentence_id so the flow controller resets
+        conn.sentence_id = str(uuid.uuid4().hex)
+
+        await sendAudioMessage(conn, SentenceType.FIRST, opus_packets, text)
+        await sendAudioMessage(conn, SentenceType.LAST, [], None)
 
     conn.dialogue.put(Message(role="assistant", content=text))
