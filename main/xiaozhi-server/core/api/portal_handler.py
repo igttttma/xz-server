@@ -58,6 +58,9 @@ WAKE_GREETING_MODES = ("cached", "none", "llm")
 # not a lock). "auto" sends none and lets the model detect it.
 ASR_LANGUAGES = ("auto", "en", "zh", "yue", "ja", "ko", "de", "fr", "ru")
 ASR_LANGUAGE_TYPES = ("aliyunbl_stream",)  # ASR providers that take language_hints
+# ASR providers whose sentence end (= end of the user's turn) is a silence length
+SPEECH_END_TYPES = ("aliyunbl_stream", "aliyun_stream")
+DEFAULT_SPEECH_END_MS = 700
 MEMORY_ON, MEMORY_OFF = "mem_local_short", "nomem"
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 # How long a signed media link stays valid (covers range requests while playing
@@ -201,6 +204,8 @@ class PortalHandler:
             "voice": tts.get("voice", ""),
             "asr_language_supported": self._asr_language_supported(),
             "asr_language": self._asr_language(),
+            "speech_end_supported": self._speech_end_supported(),
+            "speech_end_ms": int(self._module_cfg("ASR").get("max_sentence_silence") or DEFAULT_SPEECH_END_MS),
             "prompt": self.config.get("prompt", ""),
             "default_prompt": self._default_prompt(),
             "memory_enabled": self._selected("Memory") == MEMORY_ON,
@@ -215,6 +220,9 @@ class PortalHandler:
 
     def _asr_language_supported(self) -> bool:
         return self._module_cfg("ASR").get("type") in ASR_LANGUAGE_TYPES
+
+    def _speech_end_supported(self) -> bool:
+        return self._module_cfg("ASR").get("type") in SPEECH_END_TYPES
 
     def _asr_language(self) -> str:
         if not self._asr_language_supported():
@@ -287,6 +295,10 @@ class PortalHandler:
                 seq = CommentedSeq(hints)
                 seq.fa.set_flow_style()
                 edits.append((path, seq))
+        if "speech_end_ms" in body:
+            if not self._speech_end_supported():
+                raise ValueError("the selected ASR has no end-of-speech setting")
+            edits.append((("ASR", self._selected("ASR"), "max_sentence_silence"), int_in("speech_end_ms", 200, 3000)))
         if "prompt" in body:
             prompt = str(body["prompt"]).replace("\r\n", "\n").strip()
             if not prompt:

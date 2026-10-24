@@ -39,7 +39,7 @@ class ASRProvider(ASRProviderBase):
         self.language_hints = config.get("language_hints")
         self.semantic_punctuation_enabled = config.get("semantic_punctuation_enabled", False)
         max_sentence_silence = config.get("max_sentence_silence")
-        self.max_sentence_silence = int(max_sentence_silence) if max_sentence_silence else 200
+        self.max_sentence_silence = int(max_sentence_silence) if max_sentence_silence else 700
         self.multi_threshold_mode_enabled = config.get("multi_threshold_mode_enabled", False)
         self.punctuation_prediction_enabled = config.get("punctuation_prediction_enabled", True)
         self.inverse_text_normalization_enabled = config.get("inverse_text_normalization_enabled", True)

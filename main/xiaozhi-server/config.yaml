@@ -618,7 +618,10 @@ ASR:
     # Optional parameters
     disfluency_removal_enabled: false  # Whether to filter filler words (such as "um", "ah", etc.)
     semantic_punctuation_enabled: false  # Semantic sentence splitting (true: meeting scenarios, accurate; false: VAD splitting, interactive scenarios, low latency)
-    max_sentence_silence: 200  # VAD sentence-splitting silence threshold (ms), range 200-6000; only effective with VAD splitting
+    # VAD sentence-splitting silence threshold (ms), range 200-6000; only effective with VAD splitting.
+    # A sentence end ends the user's turn, so this is the pause that counts as "finished
+    # speaking": 200 cut people off at every breath. Portal "End-of-speech pause"
+    max_sentence_silence: 700
     multi_threshold_mode_enabled: false  # Prevents VAD splitting from cutting sentences too long; only effective with VAD splitting
     punctuation_prediction_enabled: true  # Whether to add punctuation automatically
     inverse_text_normalization_enabled: true  # Whether to enable ITN (converting Chinese numerals to Arabic numerals)

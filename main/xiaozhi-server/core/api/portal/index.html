@@ -342,6 +342,9 @@
     <label for="idle_timeout">Idle timeout (seconds)</label>
     <input id="idle_timeout" type="number" min="10" max="3600" step="10">
     <div class="hint">After this long without speech the server says goodbye and disconnects.</div>
+    <label for="speech_end_ms">End-of-speech pause (ms)</label>
+    <input id="speech_end_ms" type="number" min="200" max="3000" step="50">
+    <div class="hint" id="speech_end_hint">How long you must pause before the Blimp treats your sentence as finished. Higher lets you pause mid-sentence without being cut off; every reply also starts that much later. 700 is a good start.</div>
     <div class="switch barge">
       <input id="barge_in" type="checkbox">
       <div><b style="font-family:inherit">Allow interrupting the AI</b>
@@ -377,7 +380,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["asr_model", "asr_language", "llm_model", "tts_model", "voice", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "tts_gain_db", "memory_enabled"];
+const FIELDS = ["asr_model", "asr_language", "llm_model", "tts_model", "voice", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "speech_end_ms", "tts_gain_db", "memory_enabled"];
 let loaded = null;
 
 function setStatus(text, kind = "") { const s = $("status"); s.textContent = text; s.className = kind; }
@@ -429,6 +432,8 @@ function render(s) {
   // Only some ASR providers take a preferred language
   $("asr_language").disabled = !s.asr_language_supported;
   if (!s.asr_language_supported) $("asr_language_hint").textContent = "The selected ASR has no language setting.";
+  $("speech_end_ms").disabled = !s.speech_end_supported;
+  if (!s.speech_end_supported) $("speech_end_hint").textContent = "The selected ASR has no end-of-speech setting.";
   const tools = $("tools");
   tools.innerHTML = "";
   if (!s.tools_supported) tools.innerHTML = '<p class="empty">The selected intent mode has no tool list.</p>';
