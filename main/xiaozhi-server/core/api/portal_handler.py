@@ -23,7 +23,7 @@ import ipaddress
 import yaml
 from aiohttp import web
 from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import LiteralScalarString
 
 from config.config_loader import get_project_dir
@@ -54,6 +54,10 @@ REMOVED_TOOLS = (
     "hass_get_state", "hass_set_state", "hass_play_music",
 )
 WAKE_GREETING_MODES = ("cached", "none", "llm")
+# Preferred speech language: Bailian Paraformer's language_hints codes (a hint,
+# not a lock). "auto" sends none and lets the model detect it.
+ASR_LANGUAGES = ("auto", "en", "zh", "yue", "ja", "ko", "de", "fr", "ru")
+ASR_LANGUAGE_TYPES = ("aliyunbl_stream",)  # ASR providers that take language_hints
 MEMORY_ON, MEMORY_OFF = "mem_local_short", "nomem"
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 # How long a signed media link stays valid (covers range requests while playing
@@ -195,6 +199,8 @@ class PortalHandler:
                 for m in KEY_MODULES
             },
             "voice": tts.get("voice", ""),
+            "asr_language_supported": self._asr_language_supported(),
+            "asr_language": self._asr_language(),
             "prompt": self.config.get("prompt", ""),
             "default_prompt": self._default_prompt(),
             "memory_enabled": self._selected("Memory") == MEMORY_ON,
@@ -205,6 +211,24 @@ class PortalHandler:
             "max_tokens": llm.get("max_tokens", 500),
             "idle_timeout": self.config.get("close_connection_no_voice_time", 120),
         }
+
+    def _asr_language_supported(self) -> bool:
+        return self._module_cfg("ASR").get("type") in ASR_LANGUAGE_TYPES
+
+    def _asr_language(self) -> str:
+        if not self._asr_language_supported():
+            return ""
+        hints = self._module_cfg("ASR").get("language_hints") or []
+        return hints[0] if hints and hints[0] in ASR_LANGUAGES else "auto"
+
+    def _default_asr_hints(self):
+        """The selected ASR's language_hints in config.yaml (["en"] as shipped)."""
+        try:
+            with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as f:
+                default = yaml.safe_load(f) or {}
+        except (OSError, yaml.YAMLError):
+            return None
+        return (default.get("ASR", {}).get(self._selected("ASR"), {}) or {}).get("language_hints")
 
     def _default_prompt(self) -> str:
         """The persona prompt shipped in config.yaml, trimmed."""
@@ -244,6 +268,24 @@ class PortalHandler:
             if not voice:
                 raise ValueError("voice is required")
             edits.append((("TTS", self._selected("TTS"), "voice"), voice))
+        if "asr_language" in body:
+            language = body["asr_language"]
+            if not self._asr_language_supported():
+                raise ValueError("the selected ASR has no language setting")
+            if language not in ASR_LANGUAGES:
+                raise ValueError("unknown speech language")
+            # "auto": an empty list, so config.yaml's default ("en") doesn't apply
+            hints = [] if language == "auto" else [language]
+            path = ("ASR", self._selected("ASR"), "language_hints")
+            if hints == self._default_asr_hints():
+                # The default: drop the override so later changes to the default apply
+                edits.append((path, REMOVE))
+            else:
+                # Flow style ([en]): a block list would land after the blank line
+                # that _add() keeps at the end of the section
+                seq = CommentedSeq(hints)
+                seq.fa.set_flow_style()
+                edits.append((path, seq))
         if "prompt" in body:
             prompt = str(body["prompt"]).replace("\r\n", "\n").strip()
             if not prompt:
@@ -341,6 +383,9 @@ class PortalHandler:
             )
         if "barge_in" in body:
             await self._push_blimp_settings()
+        # Settings apply to new connections, and the Blimp stays connected
+        # between conversations: it reconnects once idle
+        await self._control.broadcast({"type": "config_reloaded"})
         return web.json_response({"settings": self._settings(), "reloaded": True})
 
     async def handle_get_memory(self, request: web.Request):

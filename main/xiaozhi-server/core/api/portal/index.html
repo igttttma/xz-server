@@ -275,6 +275,21 @@
         <div class="hint" data-provider="ASR"></div>
       </div>
       <div>
+        <label for="asr_language">Speech language</label>
+        <select id="asr_language">
+          <option value="en">English</option>
+          <option value="zh">Chinese (Mandarin)</option>
+          <option value="yue">Cantonese</option>
+          <option value="ja">Japanese</option>
+          <option value="ko">Korean</option>
+          <option value="de">German</option>
+          <option value="fr">French</option>
+          <option value="ru">Russian</option>
+          <option value="auto">Detect automatically</option>
+        </select>
+        <div class="hint" id="asr_language_hint">The language people speak to the Blimp; speech recognition prefers it.</div>
+      </div>
+      <div>
         <label for="llm_model">LLM model</label>
         <input id="llm_model" type="text">
         <div class="hint" data-provider="LLM"></div>
@@ -357,7 +372,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["asr_model", "llm_model", "tts_model", "voice", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "memory_enabled"];
+const FIELDS = ["asr_model", "asr_language", "llm_model", "tts_model", "voice", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "memory_enabled"];
 let loaded = null;
 
 function setStatus(text, kind = "") { const s = $("status"); s.textContent = text; s.className = kind; }
@@ -406,6 +421,9 @@ function render(s) {
     const el = $(f);
     if (el.type === "checkbox") el.checked = !!s[f]; else el.value = s[f] ?? "";
   }
+  // Only some ASR providers take a preferred language
+  $("asr_language").disabled = !s.asr_language_supported;
+  if (!s.asr_language_supported) $("asr_language_hint").textContent = "The selected ASR has no language setting.";
   const tools = $("tools");
   tools.innerHTML = "";
   if (!s.tools_supported) tools.innerHTML = '<p class="empty">The selected intent mode has no tool list.</p>';

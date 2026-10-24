@@ -621,7 +621,9 @@ ASR:
     inverse_text_normalization_enabled: true  # Whether to enable ITN (converting Chinese numerals to Arabic numerals)
     # Hotword customization docs: https://help.aliyun.com/zh/model-studio/custom-hot-words?
     # vocabulary_id: vocab-xxx-24ee19fa8cfb4d52902170a0xxxxxxxx  # Hotword ID (optional)
-    # language_hints: ["zh", "en"]  # Specify languages (optional); supports zh, en, ja, yue, ko, de, fr, ru
+    # Preferred speech language (a hint, not a lock; the portal sets it): zh, en,
+    # ja, yue, ko, de, fr, ru. An empty list lets the model detect the language.
+    language_hints: ["en"]
     output_dir: tmp/  
 VAD:
   SileroVAD:
