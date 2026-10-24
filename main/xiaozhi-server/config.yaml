@@ -87,8 +87,10 @@ portal:
 enable_stop_tts_notify: false
 # Notification sound played after speaking; audio file path
 stop_tts_notify_voice: "config/assets/tts_notify.mp3"
-# Whether to enable the WebSocket heartbeat keep-alive mechanism
-enable_websocket_ping: false
+# Whether to enable the WebSocket heartbeat keep-alive mechanism. The Blimp
+# stays connected between conversations and pings while idle; without this the
+# server drops it after close_connection_no_voice_time + 60 s and it reconnects
+enable_websocket_ping: true
 
 
 # TTS audio send delay config
