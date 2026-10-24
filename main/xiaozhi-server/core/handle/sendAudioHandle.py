@@ -10,6 +10,7 @@ from core.utils import textUtils
 from core.utils.util import audio_to_data
 from core.providers.tts.dto.dto import SentenceType
 from core.utils.audioRateController import AudioRateController
+from core.utils.output_gain import output_gain_for
 
 TAG = __name__
 # Audio frame duration (milliseconds)
@@ -140,6 +141,11 @@ async def sendAudio(
 
     # Normalize to a list for processing
     audio_list = [audios] if is_single_packet else audios
+
+    # Portal volume boost (tts_gain_db)
+    gain = output_gain_for(conn)
+    if gain is not None:
+        audio_list = [gain.process(packet) for packet in audio_list]
 
     # Send the audio packets
     await _send_audio_with_rate_control(

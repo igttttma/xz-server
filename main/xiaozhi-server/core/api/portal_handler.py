@@ -210,6 +210,7 @@ class PortalHandler:
             "barge_in": bool(self.config.get("barge_in", False)),
             "max_tokens": llm.get("max_tokens", 500),
             "idle_timeout": self.config.get("close_connection_no_voice_time", 120),
+            "tts_gain_db": self.config.get("tts_gain_db", 0),
         }
 
     def _asr_language_supported(self) -> bool:
@@ -318,6 +319,8 @@ class PortalHandler:
             edits.append((("LLM", self._selected("LLM"), "max_tokens"), int_in("max_tokens", 50, 8000)))
         if "idle_timeout" in body:
             edits.append((("close_connection_no_voice_time",), int_in("idle_timeout", 10, 3600)))
+        if "tts_gain_db" in body:
+            edits.append((("tts_gain_db",), int_in("tts_gain_db", 0, 20)))
         return edits
 
     def _write(self, edits: list):

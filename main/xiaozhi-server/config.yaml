@@ -98,6 +98,9 @@ enable_websocket_ping: true
 #   0: use precise timing, strictly matching the audio frame rate (default; computed from the frame rate at runtime)
 #   > 0: use a fixed delay (milliseconds), e.g. 60
 tts_audio_send_delay: 0
+# Volume boost (dB, 0-20) for the audio sent to the client; set in the portal.
+# 0 = off. Applied after TTS, with a peak limiter so loud parts don't clip.
+tts_gain_db: 0
 
 exit_commands:
   - "exit"

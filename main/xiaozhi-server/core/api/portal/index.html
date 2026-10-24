@@ -305,6 +305,11 @@
         <input id="voice" type="text">
         <div class="hint">Must be a voice the TTS model supports.</div>
       </div>
+      <div>
+        <label for="tts_gain_db">TTS volume boost (dB)</label>
+        <input id="tts_gain_db" type="number" min="0" max="20" step="1">
+        <div class="hint">Makes the AI's voice louder before it is sent to the Blimp. 0 = off; +6 dB is about twice as loud. Loud parts are limited instead of clipped.</div>
+      </div>
     </div>
   </section>
 
@@ -372,7 +377,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["asr_model", "asr_language", "llm_model", "tts_model", "voice", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "memory_enabled"];
+const FIELDS = ["asr_model", "asr_language", "llm_model", "tts_model", "voice", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "tts_gain_db", "memory_enabled"];
 let loaded = null;
 
 function setStatus(text, kind = "") { const s = $("status"); s.textContent = text; s.className = kind; }
