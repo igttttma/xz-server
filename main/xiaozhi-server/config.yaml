@@ -291,26 +291,19 @@ Intent:
     # The system already loads the "handle_exit_intent (exit recognition)" and "play_music (music playback)" plugins by default; do not load them again
     # Below is an example that loads the weather query, role switch and news query plugins
     functions:
-      - web_search
       - get_weather
       - get_news_from_newsnow
-      - play_music
   function_call:
     # No need to change type
     type: function_call
     # Modules under plugins_func/functions; choose which module to load through the config; once loaded, the conversation supports the corresponding function calls
     # The system already loads the "handle_exit_intent (exit recognition)" and "play_music (music playback)" plugins by default; do not load them again
     # Below is an example that loads the weather query, role switch and news query plugins
+    # change_role, web_search, play_music, search_from_ragflow, call_device and hass_* are
+    # removed from this deployment (the portal never offers them); don't list them here
     functions:
-      - change_role
-      - web_search                  # Web search
       - get_weather
-      # - search_from_ragflow
-      # - get_news_from_chinanews
       - get_news_from_newsnow
-      # play_music is the server's built-in music playback; hass_play_music plays music through an independent external program controlled by Home Assistant
-      # If you use hass_play_music, do not enable play_music; keep only one of them
-      - play_music
       #- hass_state
       #- hass_play_music
 
