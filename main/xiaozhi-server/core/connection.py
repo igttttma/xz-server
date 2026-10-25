@@ -708,7 +708,7 @@ class ConnectionHandler:
             role="assistant",
             tool_calls=[{
                 "id": da_tc_id,
-                "function": {"arguments": '{"response": "Sure! What kind would you like? Fairy tale, adventure, or something funny? Pick one and I will begin~"}', "name": "direct_answer"},
+                "function": {"arguments": '{"response": "<Joy> Sure! What kind would you like? Fairy tale, adventure, or something funny? Pick one and I will begin~"}', "name": "direct_answer"},
                 "type": "function", "index": 0,
             }],
             is_temporary=True,
@@ -1190,7 +1190,10 @@ class ConnectionHandler:
         # Support multiple parallel tool calls - stored in a list
         tool_calls_list = []  # format: [{"id": "", "name": "", "arguments": ""}]
         content_arguments = ""
-        emotion_flag = True
+        # <Expression> tags (agent-base-prompt.txt) stay out of TTS; each is sent
+        # when its sentence starts playing (sendAudioHandle)
+        face_filter = textUtils.FaceTagFilter(self.face_turn())
+        raw_reply = []  # the reply with its tags, for the dialogue history
         try:
             for response in llm_responses:
                 if self.client_abort:
@@ -1226,6 +1229,7 @@ class ConnectionHandler:
                                     new_part = self._clean_response_garbage(new_part)
                                     if new_part:
                                         tc["_da_sent"] = safe_end
+                                        new_part = face_filter.feed(new_part)
                                         self.tts.tts_text_queue.put(
                                             TTSMessageDTO(
                                                 sentence_id=current_sentence_id,
@@ -1237,14 +1241,9 @@ class ConnectionHandler:
                 else:
                     content = response
 
-                # Get the emotion emoji from the LLM reply once at the start of each turn
-                if emotion_flag and content is not None and content.strip():
-                    if (self.features or {}).get("emoji", True):
-                        asyncio.run_coroutine_threadsafe(
-                            textUtils.get_emotion(self, content),
-                            self.loop,
-                        )
-                    emotion_flag = False
+                if content and not tool_call_flag:
+                    raw_reply.append(content)
+                    content = face_filter.feed(content)
 
                 if content is not None and len(content) > 0:
                     if not tool_call_flag:
@@ -1257,6 +1256,18 @@ class ConnectionHandler:
                                 content_detail=content,
                             )
                         )
+            # Text held back as a possible tag that never closed is spoken as is
+            tail = face_filter.flush()
+            if tail and not tool_call_flag:
+                response_message.append(tail)
+                self.tts.tts_text_queue.put(
+                    TTSMessageDTO(
+                        sentence_id=current_sentence_id,
+                        sentence_type=SentenceType.MIDDLE,
+                        content_type=ContentType.TEXT,
+                        content_detail=tail,
+                    )
+                )
         except Exception as e:
             self.logger.bind(tag=TAG).error(f"LLM stream processing error: {e}")
             self.tts.tts_text_queue.put(
@@ -1326,6 +1337,7 @@ class ConnectionHandler:
                             remaining = da_response[sent_len:]
                             if remaining:
                                 remaining = self._clean_response_garbage(remaining)
+                                remaining = face_filter.feed(remaining) + face_filter.flush()
                                 if remaining:
                                     self.tts.tts_text_queue.put(
                                         TTSMessageDTO(
@@ -1337,7 +1349,7 @@ class ConnectionHandler:
                                     )
                             # Write to the dialogue history
                             da_response = self._clean_response_garbage(da_response)
-                            self.tts.store_tts_text(current_sentence_id, da_response)
+                            self.tts.store_tts_text(current_sentence_id, textUtils.strip_face_tags(da_response))
                             self.dialogue.put(Message(role="assistant", content=da_response))
 
                     if not real_tool_calls:
@@ -1363,7 +1375,7 @@ class ConnectionHandler:
                 if len(response_message) > 0:
                     streamed_text = "".join(response_message)
                     self.tts.store_tts_text(current_sentence_id, streamed_text)
-                    self.dialogue.put(Message(role="assistant", content=streamed_text))
+                    self.dialogue.put(Message(role="assistant", content="".join(raw_reply)))
                 response_message.clear()
 
                 # Text pauses while the tools run; streaming TTS can flush what it has
@@ -1426,7 +1438,7 @@ class ConnectionHandler:
         if len(response_message) > 0:
             text_buff = "".join(response_message)
             self.tts.store_tts_text(current_sentence_id, text_buff)
-            self.dialogue.put(Message(role="assistant", content=text_buff))
+            self.dialogue.put(Message(role="assistant", content="".join(raw_reply)))
 
         if depth == 0:
             self.tts.tts_text_queue.put(
@@ -1835,6 +1847,14 @@ class ConnectionHandler:
                 await asyncio.sleep(30)
         except Exception as e:
             self.logger.bind(tag=TAG).error(f"AEC cache cleanup task error: {e}")
+
+    def face_turn(self):
+        """Expression cues of the current turn (textUtils.FaceTagFilter / take_face_cue)"""
+        turn = getattr(self, "_face_turn", None)
+        if turn is None or turn["sentence_id"] != self.sentence_id:
+            turn = {"sentence_id": self.sentence_id, "text": 0, "cues": [], "played": 0}
+            self._face_turn = turn
+        return turn
 
     @staticmethod
     def _extract_direct_answer_response(arguments_str):

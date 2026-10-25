@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 from config.logger import setup_logging
 from jinja2 import Template
 from core.utils.util import get_ip_info
+from core.utils.textUtils import expression_list_for_prompt
 
 TAG = __name__
 
@@ -26,29 +27,6 @@ WEEKDAY_MAP = {
     "Sunday": "Sunday",
 }
 
-EMOJI_List = [
-    "😶",
-    "🙂",
-    "😆",
-    "😂",
-    "😔",
-    "😠",
-    "😭",
-    "😍",
-    "😳",
-    "😲",
-    "😱",
-    "🤔",
-    "😉",
-    "😎",
-    "😌",
-    "🤤",
-    "😘",
-    "😏",
-    "😴",
-    "😜",
-    "🙄",
-]
 
 
 class PromptManager:
@@ -227,7 +205,7 @@ class PromptManager:
                 lunar_date=lunar_date,
                 local_address=local_address,
                 weather_info=weather_info,
-                emojiList=EMOJI_List,
+                expressionList=expression_list_for_prompt(),
                 device_id=device_id,
                 client_ip=client_ip,
                 dynamic_context=self.context_data,

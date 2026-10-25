@@ -29,6 +29,8 @@ async def sendAudioMessage(conn: "ConnectionHandler", sentenceType, audios, text
         conn.tts.tts_audio_first_sentence = False
 
     if sentenceType == SentenceType.FIRST:
+        # The expression tagged at this sentence (if any) shows as it starts playing
+        expression = textUtils.take_face_cue(conn.face_turn(), text) if text else None
         # Later messages of the same sentence go into the flow-control queue; otherwise send immediately
         if (
             hasattr(conn, "audio_rate_controller")
@@ -37,11 +39,11 @@ async def sendAudioMessage(conn: "ConnectionHandler", sentenceType, audios, text
             == conn.sentence_id
         ):
             conn.audio_rate_controller.add_message(
-                lambda: send_tts_message(conn, "sentence_start", text)
+                lambda: send_sentence_start(conn, text, expression)
             )
         else:
             # New sentence or flow controller not initialized; send immediately
-            await send_tts_message(conn, "sentence_start", text)
+            await send_sentence_start(conn, text, expression)
 
     await sendAudio(conn, audios)
     # Send the sentence start message
@@ -285,6 +287,12 @@ async def _do_send_audio(conn: "ConnectionHandler", opus_packet, flow_control):
     # Update the flow control state
     flow_control["packet_count"] = packet_index + 1
     flow_control["sequence"] = sequence + 1
+
+
+async def send_sentence_start(conn: "ConnectionHandler", text, expression=None):
+    if expression:
+        await textUtils.send_expression(conn, expression)
+    await send_tts_message(conn, "sentence_start", text)
 
 
 async def send_tts_message(conn: "ConnectionHandler", state, text=None):
