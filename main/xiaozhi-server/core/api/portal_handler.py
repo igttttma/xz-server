@@ -534,6 +534,19 @@ class PortalHandler:
             return web.json_response({"error": "Expected {\"loop\": true|false}"}, status=400)
         return await self._state_command(request, {"type": "set_loop", "loop": loop}, lambda s: True, "")
 
+    async def handle_blimp_max_volume(self, request: web.Request):
+        """The Android app's "Maximum volume" (media + call volume to max at start and
+        when the mic opens): {"on": true|false}. Kept on the Blimp, per device."""
+        on = (await self._json_body(request)).get("on")
+        if not isinstance(on, bool):
+            return web.json_response({"error": "Expected {\"on\": true|false}"}, status=400)
+        return await self._state_command(
+            request,
+            {"type": "set_max_volume", "on": on},
+            lambda s: isinstance(s.get("max_volume"), bool),
+            "Only the Android app has this setting",
+        )
+
     async def handle_blimp_answer(self, request: web.Request):
         """Fallback for the spoken "answer"."""
         return await self._call_command(request, "answer_call", ("ringing",), "No call is ringing")

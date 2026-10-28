@@ -82,6 +82,7 @@ class SimpleHttpServer:
                                 web.post("/portal/api/blimp/pause", portal.handle_blimp_pause),
                                 web.post("/portal/api/blimp/resume", portal.handle_blimp_resume),
                                 web.post("/portal/api/blimp/loop", portal.handle_blimp_loop),
+                                web.post("/portal/api/blimp/max_volume", portal.handle_blimp_max_volume),
                                 web.post("/portal/api/blimp/answer", portal.handle_blimp_answer),
                                 web.post("/portal/api/blimp/decline", portal.handle_blimp_decline),
                                 web.post("/portal/api/blimp/end_call", portal.handle_blimp_end_call),

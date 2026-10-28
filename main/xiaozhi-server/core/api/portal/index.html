@@ -178,6 +178,10 @@
         <button id="end_call" disabled title="Only while the Blimp is calling or in a call">End call</button>
       </div>
     </div>
+    <div class="controls">
+      <label class="check" title="Android app only. On: media and call volume go to max when the app starts and when the mic opens (needed on the Blimp). Off: the app leaves the device's volumes alone. Kept on the device."><input type="checkbox" id="max_volume" disabled> Maximum volume</label>
+      <span class="hint" id="max_volume_hint"></span>
+    </div>
     <div class="devices" id="devices" hidden>
       <div class="devices-head">Connected Blimps <span class="hint">Click one to control it</span></div>
       <div id="device_list"></div>
@@ -574,6 +578,7 @@ function renderBlimp() {
   $("answer_call").disabled = $("decline_call").disabled = !(blimp.online && s.call === "ringing");
   $("end_call").disabled = !(blimp.online && (s.call === "calling" || s.call === "in_call"));
   renderDevices();
+  renderMaxVolume();
   renderAvatar();
   renderConversation();
   for (const btn of document.querySelectorAll("[data-play]")) btn.disabled = !blimp.online;
@@ -707,6 +712,24 @@ function renderDevices() {
 
 // ---------- avatar (like the client's Debug panel) ----------
 const EXPRESSION_LABELS = { None: "Neutral", IntenseFocus: "Intense focus" };
+// Kept on the Blimp (Android app only); the state reports it, null elsewhere
+let maxVolumePending = false;
+function renderMaxVolume() {
+  const v = blimp.online ? blimp.state?.max_volume : undefined;
+  $("max_volume").disabled = typeof v !== "boolean";
+  if (!maxVolumePending) $("max_volume").checked = v === true;
+  $("max_volume_hint").textContent = blimp.online && typeof v !== "boolean" ? "Android app only" : "";
+}
+$("max_volume").onchange = async (e) => {
+  maxVolumePending = true;
+  try {
+    const res = await api("/portal/api/blimp/max_volume", { method: "POST", body: JSON.stringify({ on: e.target.checked }) });
+    if (!res.done && res.message) { toast(res.message); e.target.checked = !e.target.checked; }
+  } catch (err) { toast(err.message, "err"); e.target.checked = !e.target.checked; }
+  // The Blimp's state report then confirms it
+  maxVolumePending = false;
+};
+
 let shownExpressions = "";
 
 function renderAvatar() {
