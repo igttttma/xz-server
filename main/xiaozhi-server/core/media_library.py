@@ -8,6 +8,8 @@ cache it by id.
 import json
 import os
 import secrets
+import shutil
+import subprocess
 import time
 
 from config.config_loader import get_project_dir
@@ -32,6 +34,25 @@ VIDEO_TYPES = {
     ".m4v": "video/mp4",
     ".webm": "video/webm",
 }
+
+
+# Video codecs the Blimp's WebView (and Electron) usually can't decode
+UNPLAYABLE_CODECS = {"hevc": "HEVC (H.265)"}
+
+
+def _video_codec(path: str):
+    """Codec of the file's first video stream (ffprobe), or None if unknown."""
+    probe = shutil.which("ffprobe")
+    if not probe:
+        return None
+    try:
+        result = subprocess.run(
+            [probe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None
 
 
 def _looks_like(ext: str, head: bytes) -> bool:
@@ -79,7 +100,17 @@ class MediaLibrary:
         os.replace(tmp, self.index_path)
 
     def list(self) -> list:
-        return sorted(self._load(), key=lambda e: -e["uploaded_at"])
+        entries = self._load()
+        if self.kind == "video" and any("video_codec" not in e for e in entries):
+            # Videos uploaded before the codec check: probe once and remember
+            for e in entries:
+                if "video_codec" not in e:
+                    e["video_codec"] = _video_codec(self.path(e))
+            self._save(entries)
+        for e in entries:
+            if e.get("video_codec") in UNPLAYABLE_CODECS:
+                e["unplayable"] = UNPLAYABLE_CODECS[e["video_codec"]]
+        return sorted(entries, key=lambda e: -e["uploaded_at"])
 
     def get(self, clip_id: str):
         return next((e for e in self._load() if e["id"] == clip_id), None)
@@ -129,6 +160,8 @@ class MediaLibrary:
             "size": size,
             "uploaded_at": time.time(),
         }
+        if self.kind == "video":
+            entry["video_codec"] = _video_codec(self.dir + entry["file"])
         entries = self._load()
         entries.append(entry)
         self._save(entries)

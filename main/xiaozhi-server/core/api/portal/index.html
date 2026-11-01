@@ -112,6 +112,7 @@
   .cache-bar { display: block; width: 90px; height: 4px; margin-top: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
   .cache-bar i { display: block; height: 100%; background: var(--accent); }
   td.title small { display: block; color: var(--muted); font-weight: 400; font-size: 11px; }
+  td.title .unplayable { display: inline-block; margin-top: 3px; padding: 1px 6px; border-radius: 4px; background: var(--err); color: #fff; font-size: 11px; font-weight: 600; }
   td.actions { text-align: right; }
   td.actions button + button { margin-left: 6px; }
   tr.playing td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
@@ -217,12 +218,16 @@
       <button class="primary" id="conv_send_btn" disabled>Send</button>
     </form>
   </section>
+  </div>
+
+  <div class="tab" id="tab_media" data-tab="media">
+  <p class="banner live">Uploads and deletes happen right away; Play now plays on the selected Blimp. Every Blimp keeps a copy of the videos.</p>
 
   <section>
     <h2>Now playing</h2>
     <div class="player-head">
       <span class="kind" id="np_kind">IDLE</span>
-      <div><b id="np_title">Nothing playing</b><div class="meta" id="np_meta">Press Play now on a clip in Media.</div></div>
+      <div><b id="np_title">Nothing playing</b><div class="meta" id="np_meta">Press Play now on a clip below.</div></div>
     </div>
     <div class="progress" id="np_progress"><i id="np_bar"></i></div>
     <div class="times"><span id="np_pos">0:00</span><span id="np_dur">0:00</span></div>
@@ -232,10 +237,6 @@
       <label class="loop" title="Repeat the clip; also applies to the next clips you play"><input type="checkbox" id="np_loop" disabled> Loop</label>
     </div>
   </section>
-  </div>
-
-  <div class="tab" id="tab_media" data-tab="media">
-  <p class="banner live">Uploads and deletes happen right away; Play now plays on the selected Blimp. Every Blimp keeps a copy of the videos.</p>
 
   <section>
     <h2>Audio server</h2>
@@ -900,6 +901,13 @@ function mediaServer(kind) {
         cells[0].textContent = i + 1;
         cells[1].querySelector("b").textContent = c.title;
         cells[1].querySelector("small").textContent = `Uploaded ${new Date(c.uploaded_at * 1000).toLocaleString()}`;
+        if (c.unplayable) {
+          const tag = document.createElement("span");
+          tag.className = "unplayable";
+          tag.textContent = `Unplayable: ${c.unplayable}`;
+          tag.title = "The Blimp's player can't decode this codec. Re-export the video as MP4 (H.264/AAC).";
+          cells[1].appendChild(tag);
+        }
         cells[3].textContent = fmtSize(c.size);
         if (video) cells[4].dataset.id = c.id;
         const player = row.querySelector("audio, video");
