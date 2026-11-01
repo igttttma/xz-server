@@ -54,6 +54,8 @@ class BlimpControl:
         # async callable(send) run after each welcome; send(message) reaches that
         # device only (the portal pushes its settings and the video list)
         self.on_connect = None
+        # SpeakerHub (set by the websocket server): mirrors the selected Blimp's media
+        self.speakers = None
 
     # ---------- the selected device ----------
 
@@ -171,7 +173,10 @@ class BlimpControl:
         if msg.get("type") == "ping":
             await device.websocket.send(json.dumps({"type": "pong"}))
         elif msg.get("type") == "state":
+            old_status = (device.state.get("playback") or {}).get("status")
             device.state = {k: v for k, v in msg.items() if k != "type"}
+            if self.speakers is not None and device is self.devices.get(self.selected):
+                self.speakers.media_status(old_status, (device.state.get("playback") or {}).get("status"))
             device.state_at = time.time()
             await self._notify()
 
@@ -184,9 +189,11 @@ class BlimpControl:
             return False
         try:
             await device.websocket.send(json.dumps(message))
-            return True
         except websockets.ConnectionClosed:
             return False
+        if self.speakers is not None:
+            self.speakers.media(message)
+        return True
 
     async def broadcast(self, message: dict):
         """Send to every connected Blimp (settings, the video list)."""

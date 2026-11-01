@@ -293,6 +293,8 @@ async def _do_send_audio(conn: "ConnectionHandler", opus_packet, flow_control):
     else:
         # Send the opus packet directly
         await conn.websocket.send(opus_packet)
+        if _speakers(conn):
+            _speakers(conn).audio(conn, opus_packet)
 
     # Update the flow control state
     flow_control["packet_count"] = packet_index + 1
@@ -339,6 +341,13 @@ async def send_tts_message(conn: "ConnectionHandler", state, text=None):
 
     # Send the message to the client
     await conn.websocket.send(json.dumps(message))
+    if state in ("start", "stop") and _speakers(conn):
+        _speakers(conn).tts_state(conn, state)
+
+
+def _speakers(conn: "ConnectionHandler"):
+    """The SpeakerHub mirroring this conversation's sound, if the server has one."""
+    return getattr(getattr(conn, "server", None), "speaker_hub", None)
 
 
 async def send_stt_message(conn: "ConnectionHandler", text):

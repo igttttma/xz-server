@@ -18,5 +18,8 @@ async def handleAbortMessage(conn: "ConnectionHandler"):
     await conn.websocket.send(
         json.dumps({"type": "tts", "state": "stop", "interrupted": True, "session_id": conn.session_id})
     )
+    speakers = getattr(getattr(conn, "server", None), "speaker_hub", None)
+    if speakers:
+        speakers.tts_state(conn, "stop", interrupted=True)
     conn.clearSpeakStatus()
     conn.logger.bind(tag=TAG).info("Abort message received-end")

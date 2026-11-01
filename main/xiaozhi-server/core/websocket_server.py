@@ -35,6 +35,7 @@ from core.connection import ConnectionHandler
 from config.config_loader import get_config_from_api_async
 from core.auth import AuthManager, AuthenticationError
 from core.blimp_control import BlimpControl
+from core.speaker_hub import SpeakerHub
 from core.utils.modules_initialize import initialize_modules
 from core.utils.util import check_vad_update, check_asr_update
 
@@ -50,6 +51,9 @@ class WebSocketServer:
         self.active_connections = {}
         # The Blimp's always-on control socket (online status, portal commands)
         self.blimp_control = BlimpControl(config)
+        # Extra players (a phone on a big speaker) mirroring the selected Blimp's sound
+        self.speaker_hub = SpeakerHub(self.blimp_control)
+        self.blimp_control.speakers = self.speaker_hub
         modules = initialize_modules(
             self.logger,
             self.config,
@@ -124,8 +128,12 @@ class WebSocketServer:
             await websocket.close()
             return
         device_id = websocket.request.headers.get("device-id")
-        if urlparse(websocket.request.path).path.rstrip("/").endswith("/control"):
+        path = urlparse(websocket.request.path).path.rstrip("/")
+        if path.endswith("/control"):
             await self.blimp_control.handle(websocket, device_id)
+            return
+        if path.endswith("/speaker"):
+            await self.speaker_hub.handle(websocket, device_id)
             return
         # Pass the current server instance when creating the ConnectionHandler
         handler = ConnectionHandler(
