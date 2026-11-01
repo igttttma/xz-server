@@ -57,6 +57,7 @@ REMOVED_TOOLS = (
     "hass_get_state", "hass_set_state", "hass_play_music",
 )
 WAKE_GREETING_MODES = ("cached", "none", "llm")
+IDLE_END_MODES = ("quiet", "goodbye")  # no speech for idle_timeout: end silently or say idle_goodbye_text
 # Preferred speech language: Bailian Paraformer's language_hints codes (a hint,
 # not a lock). "auto" sends none and lets the model detect it.
 ASR_LANGUAGES = ("auto", "en", "zh", "yue", "ja", "ko", "de", "fr", "ru")
@@ -227,7 +228,8 @@ class PortalHandler:
             "wake_greeting": self.config.get("wake_greeting", "cached"),
             "barge_in": bool(self.config.get("barge_in", False)),
             "max_tokens": llm.get("max_tokens", 500),
-            "idle_timeout": self.config.get("close_connection_no_voice_time", 120),
+            "idle_timeout": self.config.get("close_connection_no_voice_time", 15),
+            "idle_end": self.config.get("idle_end", "quiet"),
             "tts_gain_db": self.config.get("tts_gain_db", 0),
         }
 
@@ -365,7 +367,11 @@ class PortalHandler:
         if "max_tokens" in body:
             edits.append((("LLM", self._selected("LLM"), "max_tokens"), int_in("max_tokens", 50, 8000)))
         if "idle_timeout" in body:
-            edits.append((("close_connection_no_voice_time",), int_in("idle_timeout", 10, 3600)))
+            edits.append((("close_connection_no_voice_time",), int_in("idle_timeout", 5, 3600)))
+        if "idle_end" in body:
+            if body["idle_end"] not in IDLE_END_MODES:
+                raise ValueError("unknown idle end mode")
+            edits.append((("idle_end",), body["idle_end"]))
         if "tts_gain_db" in body:
             edits.append((("tts_gain_db",), int_in("tts_gain_db", 0, 20)))
         return edits

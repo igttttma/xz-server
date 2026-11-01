@@ -12,13 +12,16 @@ handle_exit_intent_function_desc = {
     "type": "function",
     "function": {
         "name": "handle_exit_intent",
-        "description": "Call this when the user wants to end the conversation or exit the system",
+        "description": (
+            "End the conversation. Call this when the user says goodbye (bye, see you, good night, "
+            "that's all, thanks that's it) or asks to stop talking. The device then waits for its wake word."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "say_goodbye": {
                     "type": "string",
-                    "description": "A farewell message to end the conversation with the user in a friendly way",
+                    "description": "One short, friendly farewell sentence, e.g. \"Bye, talk soon!\"",
                 }
             },
             "required": ["say_goodbye"],
@@ -35,8 +38,8 @@ def handle_exit_intent(conn: "ConnectionHandler", say_goodbye: str | None = None
     try:
         if say_goodbye is None:
             say_goodbye = "Goodbye, have a great day!"
-        if not conn.close_after_chat:
-            conn.close_after_chat = True
+        # End the conversation after the farewell; the connection stays for the next wake
+        conn.end_session_after_chat = True
         logger.bind(tag=TAG).info(f"Exit intent handled: {say_goodbye}")
         return ActionResponse(
             action=Action.RESPONSE, result="Exit intent handled", response=say_goodbye

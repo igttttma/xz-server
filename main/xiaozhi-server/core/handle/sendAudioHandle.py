@@ -56,6 +56,16 @@ async def sendAudioMessage(conn: "ConnectionHandler", sentenceType, audios, text
         await send_tts_message(conn, "stop", None)
         if conn.close_after_chat:
             await conn.close()
+        elif conn.end_session_after_chat:
+            await end_session(conn)
+
+
+async def end_session(conn: "ConnectionHandler"):
+    """End the conversation but keep the connection: the client lets the reply
+    finish playing, stops listening and waits for its wake word again."""
+    conn.end_session_after_chat = False
+    conn.logger.bind(tag=TAG).info("Ending the conversation; the connection stays open")
+    await conn.websocket.send(json.dumps({"type": "goodbye", "session_id": conn.session_id}))
 
 
 async def _wait_for_audio_completion(conn: "ConnectionHandler"):
@@ -333,11 +343,6 @@ async def send_tts_message(conn: "ConnectionHandler", state, text=None):
 
 async def send_stt_message(conn: "ConnectionHandler", text):
     """Send an STT state message"""
-    end_prompt_str = conn.config.get("end_prompt", {}).get("prompt")
-    if end_prompt_str and end_prompt_str == text:
-        await send_tts_message(conn, "start")
-        return
-
     # Parse the JSON format and extract the actual user speech content
     display_text = text
     try:

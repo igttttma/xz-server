@@ -10,6 +10,7 @@ async def handleAbortMessage(conn: "ConnectionHandler"):
     conn.logger.bind(tag=TAG).info("Abort message received")
     # Set the abort state; this automatically aborts the LLM and TTS tasks
     conn.close_after_chat = False
+    conn.end_session_after_chat = False
     conn.client_abort = True
     conn.clear_queues()
     # Abort the client speaking state; "interrupted" tells the client to drop the

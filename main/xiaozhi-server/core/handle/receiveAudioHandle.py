@@ -1,5 +1,6 @@
 import time
 import json
+import uuid
 import asyncio
 from typing import TYPE_CHECKING
 
@@ -9,7 +10,9 @@ from core.utils.util import audio_to_data
 from core.handle.abortHandle import handleAbortMessage
 from core.handle.intentHandler import handle_user_intent
 from core.utils.output_counter import check_device_output_limit
-from core.handle.sendAudioHandle import send_stt_message, SentenceType
+from core.handle.sendAudioHandle import (
+    send_stt_message, send_tts_message, sendAudioMessage, end_session, SentenceType,
+)
 
 TAG = __name__
 
@@ -116,23 +119,38 @@ async def no_voice_close_connect(conn: "ConnectionHandler", have_voice):
     if conn.last_activity_time > 0.0:
         no_voice_time = time.time() * 1000 - conn.last_activity_time
         close_connection_no_voice_time = int(
-            conn.config.get("close_connection_no_voice_time", 120)
+            conn.config.get("close_connection_no_voice_time", 15)
         )
         if (
             not conn.close_after_chat
+            and not conn.end_session_after_chat
             and no_voice_time > 1000 * close_connection_no_voice_time
         ):
-            conn.close_after_chat = True
-            conn.client_abort = False
-            end_prompt = conn.config.get("end_prompt", {})
-            if end_prompt and end_prompt.get("enable", True) is False:
-                conn.logger.bind(tag=TAG).info("Ending the conversation without sending a farewell prompt")
-                await conn.close()
-                return
-            prompt = end_prompt.get("prompt")
-            if not prompt:
-                prompt = "Please begin with ```time really flies``` and end this conversation in an emotional, reluctant tone."
-            await startToChat(conn, prompt)
+            # Nobody spoke since the last reply: end the conversation, keep the connection.
+            # Reset the timer so the frames still arriving don't trigger it again.
+            conn.last_activity_time = time.time() * 1000
+            text = (conn.config.get("idle_goodbye_text") or "").strip()
+            if conn.config.get("idle_end", "quiet") == "goodbye" and text and conn.tts:
+                conn.logger.bind(tag=TAG).info(f"No speech for {close_connection_no_voice_time}s: saying goodbye")
+                await say_goodbye(conn, text)
+            else:
+                conn.logger.bind(tag=TAG).info(f"No speech for {close_connection_no_voice_time}s: ending quietly")
+                await end_session(conn)
+
+
+async def say_goodbye(conn: "ConnectionHandler", text):
+    """Speak a fixed farewell (no LLM), then end the conversation."""
+    opus_packets = await asyncio.to_thread(conn.tts.to_tts, text)
+    if not opus_packets:
+        await end_session(conn)
+        return
+    conn.end_session_after_chat = True
+    conn.client_abort = False
+    conn.sentence_id = str(uuid.uuid4().hex)
+    await send_tts_message(conn, "start")
+    await sendAudioMessage(conn, SentenceType.FIRST, opus_packets, text)
+    # LAST sends tts stop, then ends the conversation
+    await sendAudioMessage(conn, SentenceType.LAST, [], None)
 
 
 async def max_out_size(conn: "ConnectionHandler"):

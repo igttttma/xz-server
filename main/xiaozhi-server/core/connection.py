@@ -184,12 +184,17 @@ class ConnectionHandler:
 
         # Whether to close the connection after the chat ends
         self.close_after_chat = False
+        # Whether to end the conversation (not the connection) after the reply:
+        # the client goes back to waiting for its wake word
+        self.end_session_after_chat = False
         self.load_function_plugin = False
         self.intent_type = "nointent"
 
+        # Drops a connection that has gone quiet (no audio, messages or pings). Not
+        # tied to the short conversation idle timeout: the Blimp pings every 60 s
         self.timeout_seconds = (
-                int(self.config.get("close_connection_no_voice_time", 120)) + 60
-        )  # 60 seconds after the first close timeout, as a second close check
+                max(int(self.config.get("close_connection_no_voice_time", 15)), 120) + 60
+        )
         self.timeout_task = None
 
         # {"mcp":true} means the MCP feature is enabled
@@ -1468,7 +1473,9 @@ class ConnectionHandler:
                 Action.ERROR,
             ]:
                 text = result.response if result.response else result.result
-                if streamed_text and text in streamed_text:
+                # The exit tool's farewell is skipped if the model already said goodbye itself
+                said_bye = tool_call_data["name"] == "handle_exit_intent" and streamed_text.strip()
+                if streamed_text and (text in streamed_text or said_bye):
                     self.logger.bind(tag=TAG).debug(
                         f"Skipping duplicate TTS for tool {tool_call_data['name']}, already streamed"
                     )

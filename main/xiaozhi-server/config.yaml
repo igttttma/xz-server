@@ -57,8 +57,12 @@ log:
 
 # Delete the sound file when you are done using it
 delete_audio: true
-# Disconnect after this many seconds without voice input; default 2 minutes (120 seconds)
-close_connection_no_voice_time: 120
+# End the conversation after this many seconds without speech since the last reply.
+# The connection stays open; the client goes back to waiting for its wake word.
+close_connection_no_voice_time: 15
+# What happens then: quiet = end without speaking, goodbye = say idle_goodbye_text first
+idle_end: quiet
+idle_goodbye_text: "Okay, I'll be here if you need me."
 # TTS request timeout (seconds)
 tts_timeout: 15
 # Tool call timeout (seconds)
@@ -245,13 +249,6 @@ prompt_template: agent-base-prompt.txt
 
 # Reply on system errors
 system_error_response: "Sorry, BlimpMate is a bit busy right now. Let's try again in a moment."
-
-# Closing prompt
-end_prompt:
-  enable: true # Whether to enable the closing remarks
-  # Closing remarks
-  prompt: |
-    Please start with "time really flies" and end this conversation with heartfelt, reluctant words!
 
 # The module selected for specific processing
 selected_module:

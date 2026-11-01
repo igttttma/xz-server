@@ -377,9 +377,21 @@
         <input id="max_tokens" type="number" min="50" max="8000" step="50">
       </div>
     </div>
-    <label for="idle_timeout">Idle timeout (seconds)</label>
-    <input id="idle_timeout" type="number" min="10" max="3600" step="10">
-    <div class="hint">After this long without speech the server says goodbye and disconnects.</div>
+    <div class="row">
+      <div>
+        <label for="idle_timeout">Idle timeout (seconds)</label>
+        <input id="idle_timeout" type="number" min="5" max="3600" step="5">
+        <div class="hint">After a reply, the conversation ends if nobody speaks for this long. The Blimp then waits for its wake word (it stays connected).</div>
+      </div>
+      <div>
+        <label for="idle_end">When nobody speaks</label>
+        <select id="idle_end">
+          <option value="quiet">End quietly</option>
+          <option value="goodbye">Say a short goodbye</option>
+        </select>
+        <div class="hint">"Goodbye" says one fixed line in the current voice. Saying "bye" always ends with a short farewell.</div>
+      </div>
+    </div>
     <label for="speech_end_ms">End-of-speech pause (ms)</label>
     <input id="speech_end_ms" type="number" min="200" max="3000" step="50">
     <div class="hint" id="speech_end_hint">How long you must pause before the Blimp treats your sentence as finished. Higher lets you pause mid-sentence without being cut off; every reply also starts that much later. 700 is a good start.</div>
@@ -418,7 +430,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["asr_model", "asr_language", "llm_model", "tts_model", "voice", "tts_language", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "speech_end_ms", "tts_gain_db", "memory_enabled"];
+const FIELDS = ["asr_model", "asr_language", "llm_model", "tts_model", "voice", "tts_language", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "idle_end", "speech_end_ms", "tts_gain_db", "memory_enabled"];
 let loaded = null;
 
 function setStatus(text, kind = "") { const s = $("status"); s.textContent = text; s.className = kind; }
