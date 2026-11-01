@@ -6,7 +6,10 @@ Each speaker keeps a websocket open at /xiaozhi/speaker/ on the conversation
 port, authenticated like the conversation websocket (device-id = the speaker's
 own id). The same id reconnecting replaces its old socket.
 
-Server -> speaker: {"type": "welcome"},
+Server -> speaker: {"type": "welcome"}, then {"type": "library", items: [{kind, id,
+                   title, mime, size, path}], http_port} (also on every library
+                   change; the speaker prefetches every item and drops the rest, so
+                   "play" starts from its copy),
                    {"type": "tts", "state": "start", "sample_rate"} then binary Opus
                    frames (the AI's voice, exactly as sent to the Blimp), then
                    {"type": "tts", "state": "stop", "interrupted"?},
@@ -60,6 +63,8 @@ class SpeakerHub:
         self.logger = setup_logging()
         self.blimp_control = blimp_control
         self.speakers = {}  # speaker id -> _Speaker
+        # callable() -> the library message, sent after each welcome (set by the portal)
+        self.on_connect = None
 
     def _mirrors(self, conn) -> bool:
         """Only the portal's selected Blimp is mirrored (any Blimp if none is selected)."""
@@ -71,6 +76,10 @@ class SpeakerHub:
             if not speaker.put(data):
                 self.logger.bind(tag=TAG).warning(f"Speaker {speaker_id} is too far behind; disconnecting it")
                 asyncio.create_task(speaker.websocket.close(1011, "too slow"))
+
+    def broadcast(self, message: dict):
+        if self.speakers:
+            self._put(json.dumps(message))
 
     # ---------- what the Blimp gets ----------
 
@@ -115,6 +124,11 @@ class SpeakerHub:
             await old.websocket.close(CLOSE_REPLACED, "replaced by a new connection")
         self.logger.bind(tag=TAG).info(f"Speaker {speaker_id} online ({len(self.speakers)} connected)")
         speaker.put(json.dumps({"type": "welcome", "speaker_id": speaker_id}))
+        if self.on_connect is not None:
+            try:
+                speaker.put(json.dumps(self.on_connect()))
+            except Exception as e:
+                self.logger.bind(tag=TAG).error(f"Speaker {speaker_id}: library message failed: {e}")
         try:
             while True:
                 raw = await asyncio.wait_for(websocket.recv(), IDLE_TIMEOUT)

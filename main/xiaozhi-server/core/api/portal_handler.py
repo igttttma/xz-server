@@ -140,6 +140,8 @@ class PortalHandler:
         self.libraries = {"audio": self.audio, "video": self.video}
         # When the Blimp connects it gets its settings and the video list (to prefetch)
         ws_server.blimp_control.on_connect = self._on_blimp_connect
+        # Speaker devices prefetch every clip and video, so Play now starts from their copy
+        ws_server.speaker_hub.on_connect = self._library_message
 
     # ---------- access control ----------
 
@@ -676,8 +678,21 @@ class PortalHandler:
         ]
         return {"type": "videos", "videos": videos, "http_port": self._http_port}
 
-    async def _push_videos(self):
-        await self._control.broadcast(self._videos_message())
+    def _library_message(self) -> dict:
+        """Every clip and video, for speaker devices to prefetch (drops the rest)."""
+        items = [
+            {k: e[k] for k in ("id", "title", "mime", "size")}
+            | {"kind": library.kind, "path": self._blimp_path(library.kind, e["id"])}
+            for library in (self.audio, self.video)
+            for e in library.list()
+        ]
+        return {"type": "library", "items": items, "http_port": self._http_port}
+
+    async def _push_media(self, library):
+        """The library changed: Blimps refresh their videos, speakers everything."""
+        if library is self.video:
+            await self._control.broadcast(self._videos_message())
+        self.ws_server.speaker_hub.broadcast(self._library_message())
 
     async def handle_list_media(self, request: web.Request):
         if (denied := self._guard(request)) is not None:
@@ -704,8 +719,8 @@ class PortalHandler:
             errors.append("No file uploaded")
         for entry in added:
             self.logger.bind(tag=TAG).info(f"Portal uploaded {library.kind} {entry['id']} ({entry['size']} bytes)")
-        if added and library is self.video:
-            await self._push_videos()
+        if added:
+            await self._push_media(library)
         body = {"clips": added, "errors": errors}
         if not added:
             return web.json_response({**body, "error": "; ".join(errors)}, status=400)
@@ -732,6 +747,7 @@ class PortalHandler:
             return web.json_response({"error": f"Text-to-speech failed: {e}"}, status=502)
         entry = self.audio.add_bytes(title, ".wav", wav)
         self.logger.bind(tag=TAG).info(f"Portal generated audio {entry['id']} ({len(text)} chars, {entry['size']} bytes)")
+        await self._push_media(self.audio)
         return web.json_response({"clip": entry})
 
     def _synthesize(self, text: str) -> bytes:
@@ -749,8 +765,7 @@ class PortalHandler:
         library = self._library(request)
         if not library.delete(request.match_info["id"]):
             return web.json_response({"error": "No such clip"}, status=404)
-        if library is self.video:
-            await self._push_videos()
+        await self._push_media(library)
         return web.json_response({"ok": True})
 
     async def handle_media_file(self, request: web.Request):
