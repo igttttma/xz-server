@@ -637,7 +637,7 @@ LLM:
     type: openai
     # Find your api_key here https://bailian.console.aliyun.com/?apiKey=1#/api-key
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    model_name: qwen-flash
+    model_name: qwen3.8-flash  # multimodal: also answers camera photos (qwen-flash is text-only and drops images)
     api_key: your deepseek web key
     temperature: 0.7  # Temperature
     max_tokens: 500   # Maximum number of generated tokens
