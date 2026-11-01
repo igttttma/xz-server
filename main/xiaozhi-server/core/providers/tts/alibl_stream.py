@@ -74,6 +74,11 @@ class TTSProvider(TTSProviderBase):
         pitch = config.get("pitch", "1.0")
         self.pitch = float(pitch) if pitch else 1.0
 
+        # Language for digits, symbols and units ("15:03", "20°C"): without it CosyVoice
+        # reads them in Chinese even inside English text. Only the first entry is used.
+        hints = config.get("language_hints", ["en"])
+        self.language_hints = [hints] if isinstance(hints, str) else list(hints or [])
+
         # Apply percentage adjustments (if present); otherwise use the public configuration
         self._apply_percentage_params(config)
 
@@ -346,6 +351,7 @@ class TTSProvider(TTSProviderBase):
                         "volume": self.volume,
                         "rate": self.rate,
                         "pitch": self.pitch,
+                        **({"language_hints": self.language_hints} if self.language_hints else {}),
                     },
                     "input": {}
                 },
@@ -578,6 +584,7 @@ class TTSProvider(TTSProviderBase):
                                 "volume": self.volume,
                                 "rate": self.rate,
                                 "pitch": self.pitch,
+                                **({"language_hints": self.language_hints} if self.language_hints else {}),
                             },
                             "input": {}
                         },

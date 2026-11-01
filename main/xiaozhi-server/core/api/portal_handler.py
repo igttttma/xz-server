@@ -61,6 +61,11 @@ WAKE_GREETING_MODES = ("cached", "none", "llm")
 # not a lock). "auto" sends none and lets the model detect it.
 ASR_LANGUAGES = ("auto", "en", "zh", "yue", "ja", "ko", "de", "fr", "ru")
 ASR_LANGUAGE_TYPES = ("aliyunbl_stream",)  # ASR providers that take language_hints
+# Language CosyVoice reads digits, symbols and units in ("15:03", "20°C"); "none" sends
+# no hint (the model's default, often Chinese). alibl_stream defaults to en.
+TTS_LANGUAGES = ("en", "zh", "ja", "ko", "fr", "de", "es", "it", "pt", "ru", "ar", "th", "vi", "id", "ms", "fil", "none")
+TTS_LANGUAGE_TYPES = ("alibl_stream",)  # TTS providers that take language_hints
+TTS_DEFAULT_HINTS = ["en"]
 # ASR providers whose sentence end (= end of the user's turn) is a silence length
 SPEECH_END_TYPES = ("aliyunbl_stream", "aliyun_stream")
 DEFAULT_SPEECH_END_MS = 700
@@ -210,6 +215,8 @@ class PortalHandler:
             "voice": tts.get("voice", ""),
             "asr_language_supported": self._asr_language_supported(),
             "asr_language": self._asr_language(),
+            "tts_language_supported": self._tts_language_supported(),
+            "tts_language": self._tts_language(),
             "speech_end_supported": self._speech_end_supported(),
             "speech_end_ms": int(self._module_cfg("ASR").get("max_sentence_silence") or DEFAULT_SPEECH_END_MS),
             "prompt": self.config.get("prompt", ""),
@@ -236,14 +243,36 @@ class PortalHandler:
         hints = self._module_cfg("ASR").get("language_hints") or []
         return hints[0] if hints and hints[0] in ASR_LANGUAGES else "auto"
 
-    def _default_asr_hints(self):
-        """The selected ASR's language_hints in config.yaml (["en"] as shipped)."""
+    def _tts_language_supported(self) -> bool:
+        return self._module_cfg("TTS").get("type") in TTS_LANGUAGE_TYPES
+
+    def _tts_language(self) -> str:
+        if not self._tts_language_supported():
+            return ""
+        hints = self._module_cfg("TTS").get("language_hints", TTS_DEFAULT_HINTS) or []
+        if isinstance(hints, str):
+            hints = [hints]
+        return hints[0] if hints and hints[0] in TTS_LANGUAGES else "none"
+
+    def _default_hints(self, module, fallback=None):
+        """The selected module's language_hints in config.yaml (else `fallback`, the provider's default)."""
         try:
             with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as f:
                 default = yaml.safe_load(f) or {}
         except (OSError, yaml.YAMLError):
             return None
-        return (default.get("ASR", {}).get(self._selected("ASR"), {}) or {}).get("language_hints")
+        return (default.get(module, {}).get(self._selected(module), {}) or {}).get("language_hints", fallback)
+
+    def _hints_edit(self, module, hints, default):
+        path = (module, self._selected(module), "language_hints")
+        if hints == default:
+            # The default: drop the override so later changes to the default apply
+            return path, REMOVE
+        # Flow style ([en]): a block list would land after the blank line
+        # that _add() keeps at the end of the section
+        seq = CommentedSeq(hints)
+        seq.fa.set_flow_style()
+        return path, seq
 
     def _default_prompt(self) -> str:
         """The persona prompt shipped in config.yaml, trimmed."""
@@ -291,16 +320,16 @@ class PortalHandler:
                 raise ValueError("unknown speech language")
             # "auto": an empty list, so config.yaml's default ("en") doesn't apply
             hints = [] if language == "auto" else [language]
-            path = ("ASR", self._selected("ASR"), "language_hints")
-            if hints == self._default_asr_hints():
-                # The default: drop the override so later changes to the default apply
-                edits.append((path, REMOVE))
-            else:
-                # Flow style ([en]): a block list would land after the blank line
-                # that _add() keeps at the end of the section
-                seq = CommentedSeq(hints)
-                seq.fa.set_flow_style()
-                edits.append((path, seq))
+            edits.append(self._hints_edit("ASR", hints, self._default_hints("ASR")))
+        if "tts_language" in body:
+            language = body["tts_language"]
+            if not self._tts_language_supported():
+                raise ValueError("the selected TTS has no language setting")
+            if language not in TTS_LANGUAGES:
+                raise ValueError("unknown TTS language")
+            # "none": an empty list, so the provider's default ("en") doesn't apply
+            hints = [] if language == "none" else [language]
+            edits.append(self._hints_edit("TTS", hints, self._default_hints("TTS", TTS_DEFAULT_HINTS)))
         if "speech_end_ms" in body:
             if not self._speech_end_supported():
                 raise ValueError("the selected ASR has no end-of-speech setting")

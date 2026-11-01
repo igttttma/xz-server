@@ -321,6 +321,29 @@
         <div class="hint">Must be a voice the TTS model supports.</div>
       </div>
       <div>
+        <label for="tts_language">TTS language</label>
+        <select id="tts_language">
+          <option value="en">English</option>
+          <option value="zh">Chinese</option>
+          <option value="ja">Japanese</option>
+          <option value="ko">Korean</option>
+          <option value="fr">French</option>
+          <option value="de">German</option>
+          <option value="es">Spanish</option>
+          <option value="it">Italian</option>
+          <option value="pt">Portuguese</option>
+          <option value="ru">Russian</option>
+          <option value="ar">Arabic</option>
+          <option value="th">Thai</option>
+          <option value="vi">Vietnamese</option>
+          <option value="id">Indonesian</option>
+          <option value="ms">Malay</option>
+          <option value="fil">Filipino</option>
+          <option value="none">None (model default)</option>
+        </select>
+        <div class="hint" id="tts_language_hint">The language numbers, times and symbols are read in (15:03, 20°C). Without it they are often read in Chinese.</div>
+      </div>
+      <div>
         <label for="tts_gain_db">TTS volume boost (dB)</label>
         <input id="tts_gain_db" type="number" min="0" max="20" step="1">
         <div class="hint">Makes the AI's voice louder before it is sent to the Blimp. 0 = off; +6 dB is about twice as loud. Loud parts are limited instead of clipped.</div>
@@ -395,7 +418,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["asr_model", "asr_language", "llm_model", "tts_model", "voice", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "speech_end_ms", "tts_gain_db", "memory_enabled"];
+const FIELDS = ["asr_model", "asr_language", "llm_model", "tts_model", "voice", "tts_language", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "speech_end_ms", "tts_gain_db", "memory_enabled"];
 let loaded = null;
 
 function setStatus(text, kind = "") { const s = $("status"); s.textContent = text; s.className = kind; }
@@ -447,6 +470,8 @@ function render(s) {
   // Only some ASR providers take a preferred language
   $("asr_language").disabled = !s.asr_language_supported;
   if (!s.asr_language_supported) $("asr_language_hint").textContent = "The selected ASR has no language setting.";
+  $("tts_language").disabled = !s.tts_language_supported;
+  if (!s.tts_language_supported) $("tts_language_hint").textContent = "The selected TTS has no language setting.";
   $("speech_end_ms").disabled = !s.speech_end_supported;
   if (!s.speech_end_supported) $("speech_end_hint").textContent = "The selected ASR has no end-of-speech setting.";
   const tools = $("tools");

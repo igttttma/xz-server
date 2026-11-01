@@ -1172,7 +1172,7 @@ TTS:
     # volume: 50  # Volume: 0-100
     # rate: 1  # Speech rate: 0.5~2
     # pitch: 1  # Pitch: 0.5~2
-    # language: "Chinese"  # Output language, e.g. Chinese, English, Japanese, Korean, etc. Set it according to the languages supported by the selected voice; defaults to Chinese if omitted
+    # language_hints: ["en"]  # Language for digits/symbols/units ("15:03", "20°C"); default en. Values: zh en fr de ja ko ru pt th id vi es it ms fil ar; [] = none (model default, often Chinese)
   XunFeiTTS:
     # iFlytek TTS service; website: https://www.xfyun.cn/
     # Log in to the iFlytek speech technology platform https://console.xfyun.cn/app/myapp to create the relevant application

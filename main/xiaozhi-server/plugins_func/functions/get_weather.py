@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -31,7 +32,10 @@ GET_WEATHER_FUNCTION_DESC = {
             "properties": {
                 "location": {
                     "type": "string",
-                    "description": "City name in English, e.g. Beijing or London. Omit if the user names no place.",
+                    "description": (
+                        "City name in English, e.g. Beijing or London. Add the state or country when the user "
+                        "gives one or the name is ambiguous, e.g. Portland, Oregon. Omit if the user names no place."
+                    ),
                 },
             },
         },
@@ -40,6 +44,25 @@ GET_WEATHER_FUNCTION_DESC = {
 
 FORECAST_DAYS = 7
 CACHE_SECONDS = 600
+GEO_CANDIDATES = 10
+COORDS_RE = re.compile(r"^\s*-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?\s*$")
+
+
+def _pick_city(cities, location):
+    """GeoAPI doesn't order same-name places by size ("Detroit" lists Illinois before
+    Michigan). Prefer the region the query names ("Portland, Oregon"), then places
+    whose name contains the city ("City of London"), then the lowest rank (= most prominent)."""
+    if COORDS_RE.match(location):
+        return cities[0]  # nearest place to the coordinates
+    name, *regions = (part.strip().lower() for part in location.split(","))
+    for region in filter(None, regions):
+        in_region = [
+            c for c in cities
+            if region in ((c.get(k) or "").lower() for k in ("adm1", "adm2", "country"))
+        ]
+        cities = in_region or cities
+    named = [c for c in cities if name in (c.get("name") or "").lower()]
+    return min(named or cities, key=lambda c: int(c.get("rank") or 999))
 
 
 def _fmt(measure) -> str:
@@ -141,7 +164,9 @@ async def fetch_weather_report(weather_config: dict, location: str) -> str:
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
             try:
-                geo = await _get(client, api_host, api_key, "/geo/v2/city/lookup", location=location, number=1)
+                geo = await _get(
+                    client, api_host, api_key, "/geo/v2/city/lookup", location=location, number=GEO_CANDIDATES
+                )
             except QWeatherError as e:
                 if "no-such-location" not in e.detail:
                     raise
@@ -149,7 +174,7 @@ async def fetch_weather_report(weather_config: dict, location: str) -> str:
             cities = geo.get("location") or []
             if not cities:
                 raise WeatherUnavailable(f"No city found for '{location}'. Ask the user to check the name.")
-            city = cities[0]
+            city = _pick_city(cities, location)
             coords = f"{float(city['lat']):.2f}/{float(city['lon']):.2f}"
             current = await _get(client, api_host, api_key, f"/weather/v1/current/{coords}")
             daily = await _get(client, api_host, api_key, f"/weather/v1/daily/{coords}", days=FORECAST_DAYS)
