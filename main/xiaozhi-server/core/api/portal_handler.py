@@ -19,6 +19,7 @@ import re
 import hmac
 import base64
 import ipaddress
+import types
 
 import yaml
 from aiohttp import web
@@ -29,6 +30,8 @@ from ruamel.yaml.scalarstring import LiteralScalarString
 from config.config_loader import get_project_dir
 from core.media_library import AUDIO_TYPES, VIDEO_TYPES, MediaLibrary, UploadError
 from core.handle.helloHandle import greeting_file, greeting_signature
+from core.utils.modules_initialize import initialize_tts
+from core.utils.util import opus_datas_to_wav_bytes
 from config.logger import setup_logging
 from plugins_func.register import all_function_registry
 
@@ -63,6 +66,9 @@ SPEECH_END_TYPES = ("aliyunbl_stream", "aliyun_stream")
 DEFAULT_SPEECH_END_MS = 700
 MEMORY_ON, MEMORY_OFF = "mem_local_short", "nomem"
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+# Text-to-speech clips for the audio library
+TTS_TEXT_MAX = 5000
+TTS_SAMPLE_RATE = 24000
 # How long a signed media link stays valid (covers range requests while playing
 # and prefetching; every video list push signs fresh links)
 MEDIA_URL_TTL = 6 * 3600
@@ -669,6 +675,38 @@ class PortalHandler:
         if not added:
             return web.json_response({**body, "error": "; ".join(errors)}, status=400)
         return web.json_response(body)
+
+    async def handle_generate_audio(self, request: web.Request):
+        """Speak a text in the current TTS voice and store it in the audio library."""
+        if (denied := self._guard(request, mutating=True)) is not None:
+            return denied
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Expected JSON"}, status=400)
+        text = str(body.get("text") or "").strip()
+        if not text:
+            return web.json_response({"error": "Enter the text to speak"}, status=400)
+        if len(text) > TTS_TEXT_MAX:
+            return web.json_response({"error": f"The text is too long ({TTS_TEXT_MAX} characters at most)"}, status=400)
+        title = str(body.get("title") or "").strip() or text.splitlines()[0][:60]
+        try:
+            wav = await asyncio.to_thread(self._synthesize, text)
+        except Exception as e:
+            self.logger.bind(tag=TAG).warning(f"Portal text-to-speech failed: {e}")
+            return web.json_response({"error": f"Text-to-speech failed: {e}"}, status=502)
+        entry = self.audio.add_bytes(title, ".wav", wav)
+        self.logger.bind(tag=TAG).info(f"Portal generated audio {entry['id']} ({len(text)} chars, {entry['size']} bytes)")
+        return web.json_response({"clip": entry})
+
+    def _synthesize(self, text: str) -> bytes:
+        # A fresh instance from the saved settings, so the clip uses the voice the portal shows
+        tts = initialize_tts(self.config)
+        tts.conn = types.SimpleNamespace(sample_rate=TTS_SAMPLE_RATE)
+        opus_datas = tts.to_tts(text)
+        if not opus_datas:
+            raise RuntimeError("the TTS service returned no audio (see the server log)")
+        return opus_datas_to_wav_bytes(opus_datas, sample_rate=TTS_SAMPLE_RATE)
 
     async def handle_delete_media(self, request: web.Request):
         if (denied := self._guard(request, mutating=True)) is not None:

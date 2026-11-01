@@ -111,9 +111,19 @@ class MediaLibrary:
         except BaseException:
             os.remove(path)
             raise
+        return self._append(clip_id, stem, ext, size)
+
+    def add_bytes(self, title: str, ext: str, data: bytes) -> dict:
+        """Store a file the server made itself (e.g. text-to-speech)."""
+        clip_id = secrets.token_hex(8)
+        with open(self.dir + clip_id + ext, "wb") as f:
+            f.write(data)
+        return self._append(clip_id, title, ext, len(data))
+
+    def _append(self, clip_id: str, title: str, ext: str, size: int) -> dict:
         entry = {
             "id": clip_id,
-            "title": (stem.strip() or "Untitled")[:120],
+            "title": (title.strip() or "Untitled")[:120],
             "file": clip_id + ext,
             "mime": self.types[ext],
             "size": size,

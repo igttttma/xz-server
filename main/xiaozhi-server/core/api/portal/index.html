@@ -93,6 +93,10 @@
   .device .tag { flex: none; font-size: 11px; font-weight: 700; letter-spacing: .04em; color: var(--accent); }
   .upload { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px; border: 1px dashed var(--line); border-radius: 8px; }
   .upload input[type=file] { flex: 1; min-width: 0; }
+  .generate { display: grid; gap: 8px; margin-top: 12px; padding: 12px; border: 1px dashed var(--line); border-radius: 8px; }
+  .generate textarea { min-height: 96px; font-family: inherit; font-size: 14px; }
+  .generate .row { display: flex; gap: 8px; }
+  .generate .row input { flex: 1; min-width: 0; }
   .table { overflow-x: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-top: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
@@ -239,7 +243,14 @@
       <input id="audio_files" type="file" multiple accept=".mp3,.wav,.ogg,.oga,.opus,.m4a,.aac,.flac,.webm,audio/*" required>
       <button class="primary">Upload</button>
     </form>
-    <div class="hint" id="audio_status">Select one or more files: MP3, WAV, OGG, Opus, M4A, AAC, FLAC or WebM, up to 50 MB each. Stored in data/audio/.</div>
+    <form class="generate" id="audio_tts">
+      <textarea id="tts_text" maxlength="5000" placeholder="Or type text to turn into speech…" required></textarea>
+      <div class="row">
+        <input id="tts_title" type="text" maxlength="120" placeholder="Title (optional: first line of the text)">
+        <button class="primary">Generate</button>
+      </div>
+    </form>
+    <div class="hint" id="audio_status">Upload one or more files (MP3, WAV, OGG, Opus, M4A, AAC, FLAC or WebM, up to 50 MB each), or generate speech in the current TTS voice (Settings tab). Stored in data/audio/.</div>
     <div class="table">
       <table>
         <thead><tr><th>#</th><th>Title</th><th>Length</th><th>Size</th><th>Listen</th><th></th></tr></thead>
@@ -913,6 +924,26 @@ function mediaServer(kind) {
     }
     button.disabled = false;
   };
+
+  if (!video) {
+    const ttsForm = $("audio_tts");
+    ttsForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const button = ttsForm.querySelector("button");
+      button.disabled = true;
+      status("Generating speech…");
+      try {
+        const { clip } = await api("/portal/api/audio/tts", {
+          method: "POST",
+          body: JSON.stringify({ text: $("tts_text").value, title: $("tts_title").value }),
+        });
+        ttsForm.reset();
+        status(`Generated “${clip.title}”.`, "ok");
+        load();
+      } catch (err) { status(err.message, "err"); }
+      button.disabled = false;
+    };
+  }
   load();
 }
 

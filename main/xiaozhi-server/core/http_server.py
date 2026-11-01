@@ -89,6 +89,7 @@ class SimpleHttpServer:
                                 web.post("/portal/api/blimp/avatar", portal.handle_blimp_avatar),
                                 web.post("/portal/api/blimp/conversation", portal.handle_blimp_conversation),
                                 web.get("/portal/api/{kind:audio|video}", portal.handle_list_media),
+                                web.post("/portal/api/audio/tts", portal.handle_generate_audio),
                                 web.post("/portal/api/{kind:audio|video}", portal.handle_upload_media),
                                 web.delete("/portal/api/{kind:audio|video}/{id}", portal.handle_delete_media),
                                 web.get("/portal/api/{kind:audio|video}/{id}/file", portal.handle_media_file),
