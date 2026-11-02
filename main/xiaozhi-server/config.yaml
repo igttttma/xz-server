@@ -106,6 +106,30 @@ tts_audio_send_delay: 0
 # 0 = off. Applied after TTS, with a peak limiter so loud parts don't clip.
 tts_gain_db: 0
 
+# Beta: omni realtime mode (core/providers/omni/omni_realtime.py). When enabled,
+# one speech-to-speech model hears the Blimp and speaks the reply itself: ASR, LLM
+# and TTS are not used. Uses the Bailian API key of the LLM (or api_key here).
+# Unset numbers use the model's defaults. Set in the portal (Beta section).
+omni_realtime:
+  enabled: false
+  model: qwen3.8-omni-flash-realtime
+  voice: Tina  # must be a voice of the model (the server default is rejected)
+  # Turn detection: server_vad (silence), semantic_vad (also meaning), or
+  # semantic_vad_ec (semantic, easier to interrupt, filters background noise)
+  turn_detection: server_vad
+  vad_threshold: 0.5         # -1..1, lower = more sensitive
+  silence_duration_ms: 800   # 200..6000, pause that ends the user's turn
+  # temperature: 0.6         # 0..2 (model default 0.6)
+  # top_p: 0.95              # 0..1
+  # top_k: 20                # 0..100
+  # max_tokens: 1024         # 1..65536
+  # presence_penalty: 1.0    # -2..2
+  # repetition_penalty: 1.0
+  # seed: 42
+  enable_search: false       # web search; turns tools off (they cannot be combined)
+  tools: true                # the enabled plugins and device tools, as function calls
+  instructions: ""           # added after the persona prompt
+
 exit_commands:
   - "exit"
   - "close"

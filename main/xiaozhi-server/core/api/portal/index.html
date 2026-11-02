@@ -404,6 +404,93 @@
   </section>
 
   <section>
+    <h2>Beta: Omni realtime mode</h2>
+    <div class="switch">
+      <input id="omni_enabled" type="checkbox">
+      <div><b style="font-family:inherit">Use one realtime model for listening, thinking and speaking</b>
+        <span>The omni model hears the Blimp and answers in its own voice: the ASR, LLM, TTS and voice settings above are not used. Replies usually start about 1-1.5 s after the end-of-speech pause. The persona prompt and enabled tools still apply; camera photos are read by the vision model. Applies when the Blimp next reconnects.</span></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div>
+        <label for="omni_model">Omni model</label>
+        <input id="omni_model" type="text">
+        <div class="hint">qwen3.8-omni-flash-realtime (recommended) or qwen3.5-omni-plus-realtime / qwen3.5-omni-flash-realtime.</div>
+      </div>
+      <div>
+        <label for="omni_voice">Voice</label>
+        <select id="omni_voice"></select>
+        <div class="hint">Voices of the 3.8 model; most speak Mandarin and 28 other languages.</div>
+      </div>
+      <div>
+        <label for="omni_turn_detection">Turn detection</label>
+        <select id="omni_turn_detection">
+          <option value="server_vad">Silence (server VAD)</option>
+          <option value="semantic_vad">Meaning (semantic VAD)</option>
+          <option value="semantic_vad_ec">Meaning, easier to interrupt (semantic VAD EC)</option>
+        </select>
+        <div class="hint">How the model decides you finished speaking. Semantic modes also wait while a sentence is unfinished and ignore background noise better.</div>
+      </div>
+      <div>
+        <label for="omni_silence_ms">End-of-speech pause (ms)</label>
+        <input id="omni_silence_ms" type="number" min="200" max="6000" step="50">
+        <div class="hint">Pause that ends your turn (200-6000).</div>
+      </div>
+      <div>
+        <label for="omni_vad_threshold">Speech detection threshold</label>
+        <input id="omni_vad_threshold" type="number" min="-1" max="1" step="0.05">
+        <div class="hint">-1 to 1. Lower hears quieter speech, higher ignores more noise. Default 0.5.</div>
+      </div>
+      <div>
+        <label for="omni_max_tokens">Reply length (max tokens)</label>
+        <input id="omni_max_tokens" type="number" min="1" max="65536" step="1" data-optional placeholder="model default">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="omni_temperature">Temperature</label>
+        <input id="omni_temperature" type="number" min="0" max="1.99" step="0.05" data-optional placeholder="0.6 (default)">
+        <div class="hint">0-2: higher is more varied. Set this or top-p, not both.</div>
+      </div>
+      <div>
+        <label for="omni_top_p">Top-p</label>
+        <input id="omni_top_p" type="number" min="0.01" max="1" step="0.01" data-optional placeholder="0.95 (default)">
+      </div>
+      <div>
+        <label for="omni_top_k">Top-k</label>
+        <input id="omni_top_k" type="number" min="0" max="100" step="1" data-optional placeholder="20 (default)">
+      </div>
+      <div>
+        <label for="omni_presence_penalty">Presence penalty</label>
+        <input id="omni_presence_penalty" type="number" min="-2" max="2" step="0.1" data-optional placeholder="1 (default)">
+        <div class="hint">-2 to 2: higher avoids repeating topics.</div>
+      </div>
+      <div>
+        <label for="omni_repetition_penalty">Repetition penalty</label>
+        <input id="omni_repetition_penalty" type="number" min="0" max="2" step="0.01" data-optional placeholder="model default">
+        <div class="hint">Above 1 avoids repeating words.</div>
+      </div>
+      <div>
+        <label for="omni_seed">Seed</label>
+        <input id="omni_seed" type="number" min="0" max="2147483647" step="1" data-optional placeholder="random">
+        <div class="hint">Same seed + same input gives similar replies.</div>
+      </div>
+    </div>
+    <div class="switch">
+      <input id="omni_tools" type="checkbox">
+      <div><b style="font-family:inherit">Tools</b>
+        <span>The enabled tools below (camera, weather, goodbye, …) as function calls. Each call adds a short pause before the answer.</span></div>
+    </div>
+    <div class="switch">
+      <input id="omni_search" type="checkbox">
+      <div><b style="font-family:inherit">Web search</b>
+        <span>The model can look things up online. It cannot be combined with tools, so turning it on turns tools off.</span></div>
+    </div>
+    <label for="omni_instructions" style="margin-top:12px">Extra instructions</label>
+    <textarea id="omni_instructions" spellcheck="false" style="min-height:80px" placeholder="Optional; added after the persona prompt"></textarea>
+    <div class="hint">The model gets the persona prompt above, short rules for speaking aloud, the date, location and weather, then this.</div>
+  </section>
+
+  <section>
     <h2>Tools</h2>
     <div id="tools"></div>
   </section>
@@ -431,7 +518,26 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["asr_model", "asr_language", "llm_model", "tts_model", "voice", "tts_language", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "idle_end", "speech_end_ms", "tts_gain_db", "memory_enabled"];
+const OMNI_FIELDS = ["omni_enabled", "omni_model", "omni_voice", "omni_turn_detection", "omni_silence_ms", "omni_vad_threshold", "omni_max_tokens", "omni_temperature", "omni_top_p", "omni_top_k", "omni_presence_penalty", "omni_repetition_penalty", "omni_seed", "omni_tools", "omni_search", "omni_instructions"];
+const FIELDS = ["asr_model", "asr_language", "llm_model", "tts_model", "voice", "tts_language", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "idle_end", "speech_end_ms", "tts_gain_db", "memory_enabled", ...OMNI_FIELDS];
+// Voices of qwen3.8-omni-flash-realtime (Bailian omni voice list)
+const OMNI_VOICES = [
+  ["Tina", "Tina (sweet, default)"], ["Cici", "Cici (soft)"], ["Serena", "Serena (gentle)"], ["Mia", "Mia (warm)"],
+  ["Maia", "Maia"], ["Chloe", "Chloe"], ["Jennifer", "Jennifer"], ["Mione", "Mione"], ["Momo", "Momo (playful)"],
+  ["Liora Mira", "Liora Mira"], ["Katerina", "Katerina"], ["Cindy", "Cindy (Taiwanese accent)"], ["Qiao", "Qiao (Taiwanese accent)"],
+  ["Angel", "Angel (Taiwanese accent)"], ["Sohee", "Sohee"], ["Ono Anna", "Ono Anna"], ["Sonrisa", "Sonrisa"], ["Dolce", "Dolce"],
+  ["Roya", "Roya"], ["Hana", "Hana"], ["Marina", "Marina"], ["Siiri", "Siiri"], ["Ingrid", "Ingrid"], ["Sigga", "Sigga"],
+  ["Bea", "Bea"], ["Griet", "Griet"], ["Eliška", "Eliška"], ["longanlingxin", "longanlingxin (warm, caring)"],
+  ["Ryan", "Ryan (male)"], ["Raymond", "Raymond (male)"], ["Zane", "Zane (male)"], ["Evan", "Evan (male)"],
+  ["Theo Calm", "Theo Calm (male, calm)"], ["Aiden", "Aiden (male)"], ["Wil", "Wil (male)"], ["Emilien", "Emilien (male)"],
+  ["Alek", "Alek (male)"], ["Arda", "Arda (male)"], ["Lenn", "Lenn (male)"], ["Bodega", "Bodega (male)"], ["Andre", "Andre (male)"],
+  ["Radio Gol", "Radio Gol (male)"], ["Rizky", "Rizky (male)"], ["Jakub", "Jakub (male)"], ["Gold", "Gold (male)"],
+  ["Joyner", "Joyner (male, comedic)"], ["Li Cassian", "Li Cassian (male, character)"],
+  ["Sunny", "Sunny (Sichuanese)"], ["Eric", "Eric (male, Sichuanese)"], ["Dylan", "Dylan (male, Beijing dialect)"],
+  ["Peter", "Peter (male, Tianjin dialect)"], ["Marcus", "Marcus (male, Shaanxi dialect)"], ["Li", "Li (male, Nanjing dialect)"],
+  ["Joseph Chen", "Joseph Chen (male, Min-nan)"], ["Rocky", "Rocky (male, Cantonese)"], ["Kiki", "Kiki (Cantonese)"],
+];
+for (const [id, label] of OMNI_VOICES) $("omni_voice").add(new Option(label, id));
 let loaded = null;
 
 function setStatus(text, kind = "") { const s = $("status"); s.textContent = text; s.className = kind; }
@@ -476,10 +582,15 @@ function render(s) {
     el.textContent = provider || "not selected";
     document.getElementById(`${el.dataset.provider.toLowerCase()}_model`).disabled = !provider;
   }
+  // A voice typed into the config that the list doesn't have still shows
+  if (s.omni_voice && ![...$("omni_voice").options].some((o) => o.value === s.omni_voice)) {
+    $("omni_voice").add(new Option(s.omni_voice, s.omni_voice));
+  }
   for (const f of FIELDS) {
     const el = $(f);
     if (el.type === "checkbox") el.checked = !!s[f]; else el.value = s[f] ?? "";
   }
+  syncOmni();
   // Only some ASR providers take a preferred language
   $("asr_language").disabled = !s.asr_language_supported;
   if (!s.asr_language_supported) $("asr_language_hint").textContent = "The selected ASR has no language setting.";
@@ -512,7 +623,9 @@ function changes() {
     const el = $(f);
     let v = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value;
     let old = loaded[f];
-    if (f === "prompt") { v = v.trim(); old = String(old).trim(); }
+    // Blank optional numbers mean "the model's default"
+    if ("optional" in el.dataset && el.value.trim() === "") v = null;
+    if (f === "prompt" || f === "omni_instructions") { v = v.trim(); old = String(old ?? "").trim(); }
     if (v !== old) out[f] = v;
   }
   const tools = [...document.querySelectorAll("[data-tool]")].filter((c) => c.checked).map((c) => c.dataset.tool);
@@ -573,6 +686,13 @@ $("prompt_reset").onclick = () => {
   $("status").className = "";
   updateDirty();
 };
+// Omni realtime: web search and tools cannot be combined
+function syncOmni(changed) {
+  if (changed === "omni_search" && $("omni_search").checked) $("omni_tools").checked = false;
+  if (changed === "omni_tools" && $("omni_tools").checked) $("omni_search").checked = false;
+}
+$("omni_search").addEventListener("change", () => syncOmni("omni_search"));
+$("omni_tools").addEventListener("change", () => syncOmni("omni_tools"));
 document.addEventListener("input", () => { $("status").className = ""; updateDirty(); });
 document.addEventListener("change", () => { $("status").className = ""; updateDirty(); });
 

@@ -1,0 +1,510 @@
+"""Beta: Qwen-Omni realtime mode.
+
+When `omni_realtime.enabled` is on, one model (qwen3.8-omni-flash-realtime by default)
+hears the Blimp's microphone and speaks the reply itself: no ASR, LLM or TTS. This
+module is the bridge, one OmniRealtimeSession per Blimp connection:
+
+    mic PCM 16 kHz --input_audio_buffer.append--> model (its own VAD ends the turn)
+    model --response.audio.delta (PCM 24 kHz)--> resample --> opus --> tts_audio_queue
+
+The reply goes through the normal playback path (sendAudioMessage), so pacing, the
+volume boost, `tts start/stop`, subtitles and the speaker mirror work as with TTS.
+
+Tools are the connection's usual ones (plugins + device MCP) as realtime function
+calls. A camera photo is described by the configured VLLM and the description is the
+tool result: images sent to the realtime model mid-turn are not seen.
+
+The model keeps the whole conversation and re-bills it every turn, so the session
+closes when a conversation ends (goodbye or idle) and the next wake starts fresh.
+"""
+
+import asyncio
+import base64
+import json
+import re
+import time
+import uuid
+from typing import TYPE_CHECKING, Optional
+
+import numpy as np
+import websockets
+from scipy.signal import resample_poly
+
+from config.logger import setup_logging
+from core.providers.tts.dto.dto import SentenceType
+from core.utils import opus_encoder_utils
+
+if TYPE_CHECKING:
+    from core.connection import ConnectionHandler
+
+TAG = __name__
+logger = setup_logging()
+
+URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+DEFAULT_MODEL = "qwen3.8-omni-flash-realtime"
+DEFAULT_VOICE = "Tina"  # the server's own default (Chelsie) is rejected by 3.8
+MODEL_RATE = 24000  # response.audio.delta is PCM16 mono at 24 kHz
+TURN_DETECTION_TYPES = ("server_vad", "semantic_vad", "semantic_vad_ec")
+# Numeric session fields: config key -> (session field, type). Unset = model default.
+SAMPLING_FIELDS = {
+    "temperature": float,
+    "top_p": float,
+    "top_k": int,
+    "max_tokens": int,
+    "presence_penalty": float,
+    "repetition_penalty": float,
+    "seed": int,
+}
+# Device tools left out: each call is a round trip before the reply starts
+SKIPPED_TOOL_WORDS = ("expression", "emotion")
+TOOL_TIMEOUT = 30
+SENTENCE_END = re.compile(r"(.+?[.!?。！？…]+[\"'”’)]*)(\s+|$)", re.S)
+
+OMNI_RULES = """
+You are talking out loud: the user hears your voice through the Blimp's small speaker.
+- Speak naturally and briefly: one to three short sentences unless the user asks for more.
+- Plain spoken language only: no markdown, lists, emoji, tags or stage directions.
+- Reply in the language the user speaks unless they ask for another one.
+- Whenever the user asks you to look at or see something, call camera_take_photo first, every time.
+- When the user says goodbye, bye, see you, good night, that's all, or asks you to stop talking, you MUST call
+  handle_exit_intent (with one short farewell) instead of answering in words: that ends the conversation.
+""".strip()
+
+
+def omni_config(config: dict) -> dict:
+    return config.get("omni_realtime") or {}
+
+
+def omni_enabled(config: dict) -> bool:
+    return bool(omni_config(config).get("enabled"))
+
+
+class OmniRealtimeSession:
+    def __init__(self, conn: "ConnectionHandler"):
+        self.conn = conn
+        self.cfg = omni_config(conn.config)
+        self.ws = None
+        self.ready = asyncio.Event()
+        self._connecting: Optional[asyncio.Task] = None
+        self._reader: Optional[asyncio.Task] = None
+        self._pending_audio = []
+        # Current reply turn (spans the tool calls inside it)
+        self.turn_active = False
+        self.turn_sentence_id = None
+        self.transcript_buf = ""
+        self.reply_text = ""
+        self.pending_calls = []
+        self.response_has_audio = False
+        self.encoder = None
+        self.out_rate = None
+        self._vllm = None
+
+    # ---------- connection ----------
+
+    def _api_key(self) -> str:
+        key = self.cfg.get("api_key")
+        if key:
+            return key
+        # The Bailian key the rest of the server uses
+        for module in ("LLM", "ASR", "TTS"):
+            selected = self.conn.config.get("selected_module", {}).get(module)
+            key = (self.conn.config.get(module, {}).get(selected) or {}).get("api_key")
+            if key and not str(key).startswith("your"):
+                return key
+        raise RuntimeError("omni_realtime has no API key")
+
+    async def ensure_connected(self):
+        if self.ws is not None and self.ready.is_set():
+            return
+        if self._connecting is None or self._connecting.done():
+            self._connecting = asyncio.create_task(self._connect())
+        await asyncio.shield(self._connecting)
+
+    async def _connect(self):
+        model = self.cfg.get("model") or DEFAULT_MODEL
+        started = time.monotonic()
+        self.ready.clear()
+        self.ws = await websockets.connect(
+            f"{URL}?model={model}",
+            additional_headers={"Authorization": f"Bearer {self._api_key()}"},
+            max_size=None,
+            ping_interval=20,
+            ping_timeout=20,
+        )
+        first = json.loads(await asyncio.wait_for(self.ws.recv(), 10))
+        if first.get("type") != "session.created":
+            raise RuntimeError(f"unexpected first event: {first}")
+        await self._send({"type": "session.update", "session": self._session_config()})
+        while True:
+            msg = json.loads(await asyncio.wait_for(self.ws.recv(), 10))
+            if msg.get("type") == "session.updated":
+                break
+            if msg.get("type") == "error":
+                raise RuntimeError(f"session.update rejected: {msg.get('error')}")
+        self._reader = asyncio.create_task(self._read_loop(self.ws))
+        self.ready.set()
+        logger.bind(tag=TAG).info(
+            f"Omni realtime session ready: {model}, voice {self.cfg.get('voice') or DEFAULT_VOICE}, "
+            f"{time.monotonic() - started:.2f}s"
+        )
+        for frame in self._pending_audio:
+            await self._append_audio(frame)
+        self._pending_audio.clear()
+
+    def _session_config(self) -> dict:
+        cfg = self.cfg
+        detection = cfg.get("turn_detection") or "server_vad"
+        if detection not in TURN_DETECTION_TYPES:
+            detection = "server_vad"
+        turn = {"type": detection}
+        if cfg.get("vad_threshold") is not None:
+            turn["threshold"] = float(cfg["vad_threshold"])
+        if cfg.get("silence_duration_ms") is not None:
+            turn["silence_duration_ms"] = int(cfg["silence_duration_ms"])
+        session = {
+            "modalities": ["text", "audio"],
+            "instructions": self._instructions(),
+            "voice": cfg.get("voice") or DEFAULT_VOICE,
+            "audio": {
+                "input": {"format": {"type": "pcm", "sample_rate": 16000}},
+                "output": {"format": {"type": "pcm", "sample_rate": MODEL_RATE},
+                           "voice": cfg.get("voice") or DEFAULT_VOICE},
+            },
+            "input_audio_transcription": {"model": "qwen3-asr-flash-realtime"},
+            "turn_detection": turn,
+        }
+        for key, cast in SAMPLING_FIELDS.items():
+            if cfg.get(key) is not None:
+                session[key] = cast(cfg[key])
+        if cfg.get("enable_search"):
+            # Search and tools cannot be combined
+            session["enable_search"] = True
+        elif self._uses_tools():
+            tools = self._tools()
+            if tools:
+                session["tools"] = tools
+        return session
+
+    def _uses_tools(self) -> bool:
+        return not self.cfg.get("enable_search") and bool(self.cfg.get("tools", True))
+
+    def _instructions(self) -> str:
+        conn = self.conn
+        parts = [str(conn.config.get("prompt") or "").strip(), OMNI_RULES]
+        extra = str(self.cfg.get("instructions") or "").strip()
+        if extra:
+            parts.append(extra)
+        pm = getattr(conn, "prompt_manager", None)
+        if pm is not None:
+            try:
+                today, weekday, _ = pm._get_current_time_info()
+                context = [f"Today: {today} ({weekday}), time {time.strftime('%H:%M')}"]
+                if pm.local_address:
+                    context.append(f"Device location: {pm.local_address}")
+                if pm.weather_info:
+                    context.append(f"Weather: {pm.weather_info}")
+                parts.append("[Context]\n" + "\n".join(context))
+            except Exception as e:  # context is a nicety
+                logger.bind(tag=TAG).debug(f"No prompt context: {e}")
+        return "\n\n".join(p for p in parts if p)
+
+    def _tools(self) -> list:
+        handler = getattr(self.conn, "func_handler", None)
+        if handler is None:
+            return []
+        tools = []
+        for desc in handler.get_functions() or []:
+            fn = desc.get("function", {})
+            name = fn.get("name", "")
+            if not name or any(w in name.lower() for w in SKIPPED_TOOL_WORDS):
+                continue
+            tools.append({"type": "function", "function": {
+                "name": name,
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+            }})
+        return tools
+
+    async def _send(self, event: dict):
+        if self.ws is not None:
+            await self.ws.send(json.dumps(event, ensure_ascii=False))
+
+    async def close(self, reopen: bool = True):
+        """End the model session (its context is gone). With reopen, a fresh one is
+        opened in the background for the next conversation."""
+        ws, self.ws = self.ws, None
+        self.ready.clear()
+        self._pending_audio.clear()
+        self.turn_active = False
+        self.pending_calls = []
+        if self._reader and not self._reader.done():
+            self._reader.cancel()
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+            logger.bind(tag=TAG).info("Omni realtime session closed")
+        if reopen and not self.conn.stop_event.is_set():
+            asyncio.create_task(self.prewarm())
+
+    # ---------- input ----------
+
+    async def send_audio(self, pcm16k: bytes):
+        conn = self.conn
+        # Without barge-in the Blimp's speaker would answer itself through its mic
+        if conn.client_is_speaking and not conn.config.get("barge_in", False):
+            return
+        if not self.ready.is_set():
+            self._pending_audio.append(pcm16k)
+            del self._pending_audio[:-50]  # keep the last ~3 s
+            try:
+                await self.ensure_connected()
+            except Exception as e:
+                logger.bind(tag=TAG).error(f"Omni realtime connect failed: {e}")
+                await self.close(reopen=False)
+            return
+        await self._append_audio(pcm16k)
+
+    async def _append_audio(self, pcm16k: bytes):
+        try:
+            await self._send({"type": "input_audio_buffer.append", "audio": base64.b64encode(pcm16k).decode()})
+        except Exception as e:
+            logger.bind(tag=TAG).warning(f"Omni realtime audio send failed: {e}")
+            await self.close(reopen=False)
+
+    async def send_text(self, text: str):
+        """Typed input (portal, chat panel): a user message, then a reply."""
+        await self.ensure_connected()
+        await self._send({"type": "conversation.item.create", "item": {
+            "type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}})
+        await self._send({"type": "response.create"})
+
+    async def prewarm(self):
+        """Open the session ahead of the wake word, so the greeting starts sooner."""
+        try:
+            await self.ensure_connected()
+        except Exception as e:
+            logger.bind(tag=TAG).warning(f"Omni realtime prewarm failed (will retry on use): {e}")
+            await self.close(reopen=False)
+
+    async def greet(self):
+        """Wake greeting in the model's own voice."""
+        await self.ensure_connected()
+        # Fresh time/weather and the device tools (they register after the session opened)
+        await self._send({"type": "session.update", "session": {
+            "instructions": self._instructions(), **({"tools": self._tools()} if self._uses_tools() else {})}})
+        await self._send({"type": "response.create", "response": {"instructions": (
+            "The user just woke you up with your wake word. Greet them in one short, warm "
+            "sentence (vary it) and ask what they need.")}})
+
+    async def cancel(self):
+        """The client interrupted the reply."""
+        if self.turn_active and self.ready.is_set():
+            try:
+                await self._send({"type": "response.cancel"})
+            except Exception:
+                pass
+        self.turn_active = False
+        self.pending_calls = []
+
+    # ---------- output ----------
+
+    async def _read_loop(self, ws):
+        try:
+            async for raw in ws:
+                try:
+                    await self._handle(json.loads(raw))
+                except Exception as e:
+                    logger.bind(tag=TAG).error(f"Omni realtime event failed: {type(e).__name__}: {e}")
+        except websockets.ConnectionClosed as e:
+            logger.bind(tag=TAG).info(f"Omni realtime connection closed: {e}")
+        finally:
+            if self.ws is ws:
+                self.ws = None
+                self.ready.clear()
+                if self.turn_active:
+                    self._end_turn()
+
+    async def _handle(self, msg: dict):
+        conn = self.conn
+        t = msg.get("type", "")
+        if t == "input_audio_buffer.speech_started":
+            conn.last_activity_time = time.time() * 1000
+            if self.turn_active and conn.config.get("barge_in", False):
+                from core.handle.abortHandle import handleAbortMessage
+                logger.bind(tag=TAG).info("Omni realtime: user interrupted the reply")
+                self.turn_active = False
+                self.pending_calls = []
+                await handleAbortMessage(conn)
+        elif t == "conversation.item.input_audio_transcription.completed":
+            text = (msg.get("transcript") or "").strip()
+            if text:
+                logger.bind(tag=TAG).info(f"Recognized text: {text}")
+                await conn.websocket.send(json.dumps({"type": "stt", "text": text, "session_id": conn.session_id}))
+                self._remember("user", text)
+        elif t == "response.audio_transcript.delta":
+            await self._begin_turn()
+            self.transcript_buf += msg.get("delta", "")
+            self.reply_text += msg.get("delta", "")
+            self._queue_sentences(final=False)
+        elif t == "response.audio.delta":
+            await self._begin_turn()
+            self.response_has_audio = True
+            self._queue_audio(base64.b64decode(msg.get("delta", "")))
+        elif t == "response.audio.done":
+            if self.encoder is not None and self.turn_active:
+                self.encoder.encode_pcm_to_opus_stream(b"", True, self._queue_opus)
+        elif t == "response.function_call_arguments.done":
+            self.pending_calls.append(msg)
+        elif t == "response.done":
+            await self._response_done(msg.get("response") or {})
+        elif t == "error":
+            err = msg.get("error") or {}
+            # Cancelling with nothing in flight is harmless
+            if err.get("code") != "response_cancel_not_active":
+                logger.bind(tag=TAG).error(f"Omni realtime error: {err}")
+
+    async def _begin_turn(self):
+        conn = self.conn
+        if self.turn_active:
+            return
+        self.turn_active = True
+        self.transcript_buf = ""
+        self.reply_text = ""
+        conn.client_abort = False
+        conn.sentence_id = uuid.uuid4().hex
+        self.turn_sentence_id = conn.sentence_id
+        conn.tts.tts_audio_first_sentence = True
+        if self.encoder is None or self.out_rate != conn.sample_rate:
+            self.out_rate = conn.sample_rate
+            self.encoder = opus_encoder_utils.OpusEncoderUtils(
+                sample_rate=self.out_rate, channels=1, frame_size_ms=60
+            )
+        else:
+            self.encoder.reset_state()
+        conn.client_is_speaking = True
+        from core.handle.sendAudioHandle import send_tts_message
+        await send_tts_message(conn, "start")
+
+    def _queue_sentences(self, final: bool):
+        """Subtitles: each finished sentence of the reply transcript is a sentence_start."""
+        while True:
+            m = SENTENCE_END.match(self.transcript_buf)
+            if not m:
+                break
+            self._put((SentenceType.FIRST, None, m.group(1).strip()))
+            self.transcript_buf = self.transcript_buf[m.end():]
+        if final and self.transcript_buf.strip():
+            self._put((SentenceType.FIRST, None, self.transcript_buf.strip()))
+            self.transcript_buf = ""
+
+    def _queue_audio(self, pcm24k: bytes):
+        if not pcm24k or not self.turn_active:
+            return
+        if self.out_rate != MODEL_RATE:
+            samples = np.frombuffer(pcm24k, dtype=np.int16).astype(np.float32)
+            g = np.gcd(self.out_rate, MODEL_RATE)
+            samples = resample_poly(samples, self.out_rate // g, MODEL_RATE // g)
+            pcm24k = np.clip(samples, -32768, 32767).astype(np.int16).tobytes()
+        self.encoder.encode_pcm_to_opus_stream(pcm24k, False, self._queue_opus)
+
+    def _queue_opus(self, packet: bytes):
+        self._put((SentenceType.MIDDLE, packet, None))
+
+    def _put(self, item):
+        sentence_type, audio, text = item
+        self.conn.tts.tts_audio_queue.put((sentence_type, audio, text, self.turn_sentence_id))
+
+    async def _response_done(self, response: dict):
+        status = response.get("status")
+        usage = response.get("usage") or {}
+        if usage:
+            logger.bind(tag=TAG).info(
+                f"Omni realtime response {status}: input {usage.get('input_tokens')}, "
+                f"output {usage.get('output_tokens')} tokens"
+            )
+        calls, self.pending_calls = self.pending_calls, []
+        if status == "cancelled":
+            self.turn_active = False
+            return
+        if calls:
+            # The turn goes on: the model speaks again after the tool results
+            for call in calls:
+                output = await self._run_tool(call)
+                await self._send({"type": "conversation.item.create", "item": {
+                    "type": "function_call_output", "call_id": call.get("call_id"), "output": output}})
+            await self._send({"type": "response.create"})
+            return
+        if self.turn_active:
+            self._end_turn()
+
+    def _end_turn(self):
+        self._queue_sentences(final=True)
+        reply = self.reply_text.strip()
+        if reply:
+            logger.bind(tag=TAG).info(f"Omni realtime reply: {reply}")
+            self._remember("assistant", reply)
+        # LAST sends `tts stop` once the audio has played (and ends the session if asked)
+        self._put((SentenceType.LAST, [], None))
+        self.turn_active = False
+
+    def _remember(self, role: str, text: str):
+        """Keep the dialogue for memory summaries, like the normal pipeline."""
+        try:
+            from core.utils.dialogue import Message
+            self.conn.dialogue.put(Message(role=role, content=text))
+        except Exception:
+            pass
+
+    # ---------- tools ----------
+
+    async def _run_tool(self, call: dict) -> str:
+        from plugins_func.register import Action
+        conn = self.conn
+        name = call.get("name", "")
+        args = call.get("arguments") or "{}"
+        logger.bind(tag=TAG).info(f"Omni realtime tool call: {name}({args[:120]})")
+        try:
+            result = await asyncio.wait_for(
+                conn.func_handler.handle_llm_function_call(
+                    conn, {"name": name, "arguments": args, "id": call.get("call_id")}
+                ),
+                TOOL_TIMEOUT,
+            )
+        except Exception as e:
+            logger.bind(tag=TAG).error(f"Omni realtime tool {name} failed: {e}")
+            return f"The tool failed: {e}. Tell the user briefly."
+        if result is None:
+            return "Done."
+        images = conn._take_pending_images()
+        if images:
+            try:
+                question = json.loads(args).get("question") or "Describe what you see."
+            except (json.JSONDecodeError, AttributeError):
+                question = "Describe what you see."
+            return await self._describe_photo(images[0][0], question)
+        if result.action == Action.RESPONSE:
+            text = result.response or result.result or ""
+            if name == "handle_exit_intent":
+                return f"Say exactly this farewell to the user and nothing else: {text}"
+            return f"Tell the user: {text}" if text else "Done."
+        return str(result.result or result.response or "Done.")
+
+    async def _describe_photo(self, data_url: str, question: str) -> str:
+        if self._vllm is None:
+            from core.utils.vllm import create_instance
+            config = self.conn.config
+            name = config.get("selected_module", {}).get("VLLM")
+            vcfg = config.get("VLLM", {}).get(name) or {}
+            if not vcfg:
+                return "A photo was taken, but no vision model is configured to read it."
+            self._vllm = create_instance(vcfg.get("type", name), vcfg)
+        b64 = data_url.split(",", 1)[-1]
+        started = time.monotonic()
+        try:
+            text = await asyncio.to_thread(self._vllm.response, question, b64)
+        except Exception as e:
+            return f"A photo was taken but could not be read: {e}"
+        logger.bind(tag=TAG).info(f"Omni realtime photo described in {time.monotonic() - started:.1f}s")
+        return f"Photo taken just now. What the camera shows: {text}"

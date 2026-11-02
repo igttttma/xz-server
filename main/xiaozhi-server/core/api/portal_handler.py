@@ -71,6 +71,29 @@ TTS_DEFAULT_HINTS = ["en"]
 SPEECH_END_TYPES = ("aliyunbl_stream", "aliyun_stream")
 DEFAULT_SPEECH_END_MS = 700
 MEMORY_ON, MEMORY_OFF = "mem_local_short", "nomem"
+# Beta omni realtime mode: portal field -> (omni_realtime key, kind, range or choices).
+# "optional" numbers may be blank (null) = the model's default (the key is removed).
+OMNI_FIELDS = {
+    "omni_enabled": ("enabled", "bool", None),
+    "omni_model": ("model", "text", None),
+    "omni_voice": ("voice", "text", None),
+    "omni_turn_detection": ("turn_detection", "choice", ("server_vad", "semantic_vad", "semantic_vad_ec")),
+    "omni_vad_threshold": ("vad_threshold", "float", (-1.0, 1.0)),
+    "omni_silence_ms": ("silence_duration_ms", "int", (200, 6000)),
+    "omni_temperature": ("temperature", "optional_float", (0.0, 1.99)),
+    "omni_top_p": ("top_p", "optional_float", (0.01, 1.0)),
+    "omni_top_k": ("top_k", "optional_int", (0, 100)),
+    "omni_max_tokens": ("max_tokens", "optional_int", (1, 65536)),
+    "omni_presence_penalty": ("presence_penalty", "optional_float", (-2.0, 2.0)),
+    "omni_repetition_penalty": ("repetition_penalty", "optional_float", (0.0, 2.0)),
+    "omni_seed": ("seed", "optional_int", (0, 2**31 - 1)),
+    "omni_search": ("enable_search", "bool", None),
+    "omni_tools": ("tools", "bool", None),
+    "omni_instructions": ("instructions", "longtext", None),
+}
+OMNI_DEFAULTS = {"enabled": False, "model": "qwen3.8-omni-flash-realtime", "voice": "Tina",
+                 "turn_detection": "server_vad", "vad_threshold": 0.5, "silence_duration_ms": 800,
+                 "enable_search": False, "tools": True, "instructions": ""}
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 # Text-to-speech clips for the audio library
 TTS_TEXT_MAX = 5000
@@ -100,6 +123,11 @@ def _last_leaf(node):
 def _add(node, key, value):
     """Set node[key]; a new key goes before the previous last key's trailing blank lines."""
     if key in node:
+        node[key] = value
+        return
+    if isinstance(value, CommentedMap) and not value:
+        # A new, still empty section: blank lines stay where they are (moved onto
+        # the section key they would print between it and its first child)
         node[key] = value
         return
     tail_map, tail_key = _last_leaf(node)
@@ -233,7 +261,50 @@ class PortalHandler:
             "idle_timeout": self.config.get("close_connection_no_voice_time", 15),
             "idle_end": self.config.get("idle_end", "quiet"),
             "tts_gain_db": self.config.get("tts_gain_db", 0),
+            **self._omni_settings(),
         }
+
+    def _omni_settings(self) -> dict:
+        omni = self.config.get("omni_realtime") or {}
+        return {field: omni.get(key, OMNI_DEFAULTS.get(key)) for field, (key, _, _) in OMNI_FIELDS.items()}
+
+    def _omni_edits(self, body: dict) -> list:
+        edits = []
+        for field, (key, kind, spec) in OMNI_FIELDS.items():
+            if field not in body:
+                continue
+            value = body[field]
+            path = ("omni_realtime", key)
+            if kind == "bool":
+                if not isinstance(value, bool):
+                    raise ValueError(f"{field} must be true or false")
+            elif kind == "text":
+                value = str(value or "").strip()
+                if not value:
+                    raise ValueError(f"{field} is required")
+            elif kind == "longtext":
+                value = str(value or "").replace("\r\n", "\n").strip()
+                if len(value) > 4000:
+                    raise ValueError(f"{field} is too long (4000 characters at most)")
+            elif kind == "choice":
+                if value not in spec:
+                    raise ValueError(f"{field} must be one of {', '.join(spec)}")
+            else:
+                if kind.startswith("optional") and (value is None or value == ""):
+                    edits.append((path, REMOVE))
+                    continue
+                cast = int if kind.endswith("int") else float
+                try:
+                    value = cast(value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"{field} must be a number")
+                lo, hi = spec
+                if not lo <= value <= hi:
+                    raise ValueError(f"{field} must be between {lo} and {hi}")
+            edits.append((path, value))
+        if body.get("omni_search") is True and body.get("omni_tools") is True:
+            raise ValueError("web search and tools cannot both be on")
+        return edits
 
     def _asr_language_supported(self) -> bool:
         return self._module_cfg("ASR").get("type") in ASR_LANGUAGE_TYPES
@@ -376,6 +447,7 @@ class PortalHandler:
             edits.append((("idle_end",), body["idle_end"]))
         if "tts_gain_db" in body:
             edits.append((("tts_gain_db",), int_in("tts_gain_db", 0, 20)))
+        edits += self._omni_edits(body)
         return edits
 
     def _write(self, edits: list):

@@ -29,6 +29,10 @@ async def handleAudioMessage(conn: "ConnectionHandler", pcm_frame):
             await handleAbortMessage(conn)
     # Long-idle detection for the device, used to say goodbye
     await no_voice_close_connect(conn, have_voice)
+    # Omni realtime mode (beta): the model hears the microphone itself
+    if conn.omni is not None:
+        await conn.omni.send_audio(pcm_frame)
+        return
     # Receive audio
     await conn.asr.receive_audio(conn, pcm_frame, have_voice)
 
@@ -84,6 +88,11 @@ async def startToChat(conn: "ConnectionHandler", text):
     # In manual mode, do not interrupt the content being played
     if conn.client_is_speaking and conn.client_listen_mode != "manual":
         await handleAbortMessage(conn)
+
+    # Omni realtime mode (beta): typed text goes to the model as a user message
+    if conn.omni is not None:
+        await conn.omni.send_text(actual_text)
+        return
 
     # First run intent analysis using the actual text content
     intent_handled = await handle_user_intent(conn, actual_text)

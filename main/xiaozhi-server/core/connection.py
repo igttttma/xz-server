@@ -43,6 +43,7 @@ from core.providers.tts.dto.dto import ContentType, TTSMessageDTO, SentenceType
 from config.logger import setup_logging, build_module_string, create_connection_logger
 from config.manage_api_client import DeviceNotFoundException, DeviceBindException, generate_and_save_chat_title
 from core.utils.prompt_manager import PromptManager
+from core.providers.omni.omni_realtime import OmniRealtimeSession, omni_enabled
 from core.utils.voiceprint_provider import VoiceprintProvider
 from core.utils.util import get_system_error_response
 from core.utils import textUtils
@@ -110,6 +111,8 @@ class ConnectionHandler:
         # Images waiting to join the conversation (see attach_image)
         self._pending_images = []
         self._pending_images_lock = threading.Lock()
+        # Beta omni realtime mode: one model hears and speaks, no ASR/LLM/TTS turn
+        self.omni = None
         self.client_ip = None
         self.prompt = None
         self.welcome_msg = None
@@ -647,6 +650,10 @@ class ConnectionHandler:
                 self.vad = self._vad
             if self.asr is None:
                 self.asr = self._initialize_asr()
+            if omni_enabled(self.config):
+                self.omni = OmniRealtimeSession(self)
+                self.logger.bind(tag=TAG).info("Omni realtime mode (beta) is on for this connection")
+                asyncio.run_coroutine_threadsafe(self.omni.prewarm(), self.loop)
 
             # Initialize voiceprint recognition
             self._initialize_voiceprint()
@@ -1625,6 +1632,9 @@ class ConnectionHandler:
     async def close(self, ws=None):
         """Resource cleanup method"""
         try:
+            if self.omni is not None:
+                await self.omni.close(reopen=False)
+
             # Clean up the VAD connection resources
             if (
                     hasattr(self, "vad")

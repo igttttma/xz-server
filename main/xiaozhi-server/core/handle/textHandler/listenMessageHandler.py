@@ -134,6 +134,15 @@ class ListenTextMessageHandler(TextMessageHandler):
         # "none" (just listen), or "llm" (let the LLM greet)
         mode = conn.config.get("wake_greeting", "cached")
         conn.logger.bind(tag=TAG).info(f"Wake event: {text} (greeting: {mode})")
+        if conn.omni is not None and mode != "none":
+            # Omni realtime mode (beta): the model greets in its own voice (the cached
+            # greetings are in the TTS voice). Its reply ends with `tts stop` as usual.
+            mark_just_woken(conn)
+            try:
+                await conn.omni.greet()
+                return
+            except Exception as e:
+                conn.logger.bind(tag=TAG).error(f"Omni realtime greeting failed: {e}")
         if mode == "llm":
             mark_just_woken(conn)
             enqueue_asr_report(conn, text, [])

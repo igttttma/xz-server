@@ -13,6 +13,8 @@ async def handleAbortMessage(conn: "ConnectionHandler"):
     conn.end_session_after_chat = False
     conn.client_abort = True
     conn.clear_queues()
+    if getattr(conn, "omni", None) is not None:
+        await conn.omni.cancel()
     # Abort the client speaking state; "interrupted" tells the client to drop the
     # reply audio it still has buffered (a normal stop lets it play out)
     await conn.websocket.send(

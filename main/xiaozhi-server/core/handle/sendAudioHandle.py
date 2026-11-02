@@ -65,6 +65,10 @@ async def end_session(conn: "ConnectionHandler"):
     finish playing, stops listening and waits for its wake word again."""
     conn.end_session_after_chat = False
     conn.logger.bind(tag=TAG).info("Ending the conversation; the connection stays open")
+    # Omni realtime mode: the model re-bills its whole context every turn, so a
+    # new conversation starts a new session
+    if getattr(conn, "omni", None) is not None:
+        await conn.omni.close()
     await conn.websocket.send(json.dumps({"type": "goodbye", "session_id": conn.session_id}))
 
 
