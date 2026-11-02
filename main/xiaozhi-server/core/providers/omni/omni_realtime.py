@@ -98,6 +98,10 @@ class OmniRealtimeSession:
         self.encoder = None
         self.out_rate = None
         self._vllm = None
+        # Diagnostics: audio sent to the model this session, and the current listen start
+        self.sent_ms = 0
+        self.listen_started_at = None
+        self.listen_first_audio_logged = False
 
     # ---------- connection ----------
 
@@ -234,6 +238,7 @@ class OmniRealtimeSession:
         opened in the background for the next conversation."""
         ws, self.ws = self.ws, None
         self.ready.clear()
+        self.sent_ms = 0
         self._pending_audio.clear()
         self.turn_active = False
         self.pending_calls = []
@@ -266,7 +271,19 @@ class OmniRealtimeSession:
             return
         await self._append_audio(pcm16k)
 
+    def listen_started(self):
+        """The Blimp opened its microphone (listen start)."""
+        self.listen_started_at = time.monotonic()
+        self.listen_first_audio_logged = False
+        logger.bind(tag=TAG).info(f"Omni realtime: listening (model has {self.sent_ms} ms of audio so far)")
+
     async def _append_audio(self, pcm16k: bytes):
+        self.sent_ms += len(pcm16k) // 32
+        if self.listen_started_at is not None and not self.listen_first_audio_logged:
+            self.listen_first_audio_logged = True
+            logger.bind(tag=TAG).info(
+                f"Omni realtime: first audio {time.monotonic() - self.listen_started_at:.2f}s after listen start "
+                f"(audio position {self.sent_ms} ms)")
         try:
             await self._send({"type": "input_audio_buffer.append", "audio": base64.b64encode(pcm16k).decode()})
         except Exception as e:
@@ -329,7 +346,14 @@ class OmniRealtimeSession:
     async def _handle(self, msg: dict):
         conn = self.conn
         t = msg.get("type", "")
+        if t == "input_audio_buffer.speech_stopped":
+            logger.bind(tag=TAG).info(f"Omni realtime: speech stopped at {msg.get('audio_end_ms')} ms (sent {self.sent_ms} ms)")
+        elif t == "conversation.item.input_audio_transcription.failed":
+            logger.bind(tag=TAG).warning(f"Omni realtime transcription failed: {msg.get('error')}")
         if t == "input_audio_buffer.speech_started":
+            since = f", {time.monotonic() - self.listen_started_at:.2f}s after listen start" if self.listen_started_at else ""
+            logger.bind(tag=TAG).info(
+                f"Omni realtime: speech started at {msg.get('audio_start_ms')} ms (sent {self.sent_ms} ms{since})")
             conn.last_activity_time = time.time() * 1000
             if self.turn_active and conn.config.get("barge_in", False):
                 from core.handle.abortHandle import handleAbortMessage

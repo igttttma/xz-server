@@ -43,6 +43,8 @@ class ListenTextMessageHandler(TextMessageHandler):
         if msg_json["state"] == "start":
             # The device switches from playback back to recording mode; clear all audio states and buffers
             conn.reset_audio_states()
+            if conn.omni is not None:
+                conn.omni.listen_started()
         elif msg_json["state"] == "stop":
             # Received stop but ASR is not initialized; skip processing
             if conn.asr is None:
