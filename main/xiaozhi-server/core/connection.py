@@ -1231,7 +1231,7 @@ class ConnectionHandler:
                                 if safe_end > sent_len:
                                     new_part = da_text[sent_len:safe_end]
                                     # Remove JSON closing garbage that may leak into the delta
-                                    new_part = self._clean_response_garbage(new_part)
+                                    new_part = self._clean_response_garbage(new_part, final=False)
                                     if new_part:
                                         tc["_da_sent"] = safe_end
                                         new_part = face_filter.feed(new_part)
@@ -1897,10 +1897,13 @@ class ConnectionHandler:
         return raw
 
     @staticmethod
-    def _clean_response_garbage(text):
+    def _clean_response_garbage(text, final=True):
         """Clean up JSON closing symbols that may leak into the response.
         The model sometimes generates JSON closing characters (such as )"}} or '}) inside the
         response content; they are not part of the story and must be removed.
+
+        final=False is for a streamed piece of the reply: it keeps trailing spaces and
+        quotes, which belong to the next piece ("trust " + "atoms", not "trustatoms").
         """
         if not text:
             return text
@@ -1914,6 +1917,8 @@ class ConnectionHandler:
                 continue
             cleaned.append(line)
         result = '\n'.join(cleaned)
+        if not final:
+            return result
         # Remove any trailing JSON closing symbols
         result = re.sub(r'["\'}\]]+$', '', result.rstrip()).rstrip()
         return result
