@@ -29,7 +29,7 @@ class ASRProvider(ASRProviderBase):
 
         # Alibaba Bailian configuration
         self.api_key = config.get("api_key")
-        self.model = config.get("model", "paraformer-realtime-v2")
+        self.model = config.get("model", "qwen-audio-3.1-asr-flash-streaming")
         self.sample_rate = config.get("sample_rate", 16000)
         self.format = config.get("format", "pcm")
 
@@ -145,8 +145,8 @@ class ASRProvider(ASRProviderBase):
             }
         }
 
-        # Add the vocabulary_id parameter only when the model name ends with v2
-        if self.model.lower().endswith("v2"):
+        # Hotwords: paraformer v1 does not take vocabulary_id; the v2 and newer models do
+        if self.vocabulary_id and not self.model.lower().endswith("v1"):
             message["payload"]["parameters"]["vocabulary_id"] = self.vocabulary_id
 
         if self.language_hints:

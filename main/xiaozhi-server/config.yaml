@@ -596,12 +596,14 @@ ASR:
     # Platform: https://bailian.console.aliyun.com/
     # API Key page: https://bailian.console.aliyun.com/#/api-key
     # Documentation: https://help.aliyun.com/zh/model-studio/websocket-for-paraformer-real-time-service
-    # Supported models: paraformer-realtime-v2 (recommended), paraformer-realtime-8k-v2, paraformer-realtime-v1, paraformer-realtime-8k-v1
+    # Models on this protocol: qwen-audio-3.1-asr-flash-streaming (newest, default),
+    # qwen-audio-3.0-asr-flash-streaming, fun-asr-realtime, paraformer-realtime-v2 (older generation).
+    # The three newer models were far more robust than Paraformer to reverb, far-field audio and
+    # background speech in a Nov 2026 test (WER 0-4% vs 25-65%), but end a turn ~0.3 s later.
     type: aliyunbl_stream
     # Required parameters
     api_key: your Alibaba Cloud Bailian API key
-    # Model selection; the v2 version is recommended
-    model: paraformer-realtime-v2
+    model: qwen-audio-3.1-asr-flash-streaming
     # Audio format and sample rate
     format: pcm
     sample_rate: 16000  # v2 supports any sample rate, v1 only supports 16000, and the 8k version only supports 8000
