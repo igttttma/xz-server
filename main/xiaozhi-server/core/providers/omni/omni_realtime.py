@@ -223,8 +223,10 @@ class OmniRealtimeSession:
         pm = getattr(conn, "prompt_manager", None)
         if pm is not None:
             try:
-                today, weekday, _ = pm._get_current_time_info()
-                context = [f"Today: {today} ({weekday}), time {time.strftime('%H:%M')}"]
+                now = pm.now()
+                part_of_day = ("night" if now.hour < 5 else "morning" if now.hour < 12
+                               else "afternoon" if now.hour < 18 else "evening" if now.hour < 22 else "night")
+                context = [f"Local time where the user is: {now:%A %Y-%m-%d %H:%M} ({part_of_day})"]
                 if pm.local_address:
                     context.append(f"Device location: {pm.local_address}")
                 if pm.weather_info:
@@ -337,7 +339,8 @@ class OmniRealtimeSession:
             "instructions": self._instructions(), **({"tools": self._tools()} if self._uses_tools() else {})}})
         await self._send({"type": "response.create", "response": {"instructions": (
             "The user just woke you up with your wake word. Greet them in one short, warm "
-            "sentence (vary it) and ask what they need.")}})
+            "sentence (vary it) and ask what they need. Any time-of-day greeting must match the "
+            "local time in your context.")}})
 
     async def cancel(self):
         """The client interrupted the reply."""

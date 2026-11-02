@@ -108,7 +108,7 @@ async def process_intent_result(
                     from core.utils.current_time import get_current_time_info
 
                     current_time, today_date, today_weekday, lunar_date = (
-                        get_current_time_info()
+                        get_current_time_info(getattr(conn.prompt_manager, "timezone", None))
                     )
 
                     # Build the base prompt with context

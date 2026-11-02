@@ -151,6 +151,7 @@ def get_ip_info(ip_addr, logger, test_ip=None):
             "country": resp.get("country"),
             "lat": lat or None,
             "lon": lon or None,
+            "timezone": resp.get("timezone"),  # e.g. "America/Detroit"
         }
         cache_manager.set(CacheType.IP_INFO, ip_addr, ip_info)
         return ip_info

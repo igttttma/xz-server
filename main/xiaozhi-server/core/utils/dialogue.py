@@ -28,6 +28,8 @@ class Message:
 class Dialogue:
     def __init__(self):
         self.dialogue: List[Message] = []
+        # The device's timezone (PromptManager.update_context_info); None = server clock
+        self.timezone = None
         # Get the current time
         self.current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -118,8 +120,9 @@ class Dialogue:
             full_prompt = system_message.content
 
             # Replace the time placeholder
+            from core.utils.current_time import local_now
             full_prompt = full_prompt.replace(
-                "{{current_time}}", datetime.now().strftime("%H:%M")
+                "{{current_time}}", local_now(self.timezone).strftime("%H:%M")
             )
 
             # Fill in the memory

@@ -110,6 +110,11 @@ class PromptManager:
         self.logger.bind(tag=TAG).info(f"Using quick prompt: {user_prompt[:50]}...")
         return user_prompt
 
+    def now(self):
+        """The time where the device is (its IP location's timezone), not the server's."""
+        from .current_time import local_now
+        return local_now(getattr(self, "timezone", None))
+
     def _get_current_time_info(self) -> tuple:
         """Get the current time information"""
         from .current_time import (
@@ -118,9 +123,10 @@ class PromptManager:
             get_current_lunar_date,
         )
 
-        today_date = get_current_date()
-        today_weekday = get_current_weekday()
-        lunar_date = get_current_lunar_date() + "\n"
+        now = self.now()
+        today_date = get_current_date(now)
+        today_weekday = get_current_weekday(now)
+        lunar_date = get_current_lunar_date(now) + "\n"
 
         return today_date, today_weekday, lunar_date
 
@@ -134,6 +140,10 @@ class PromptManager:
                 self.local_address = ", ".join(
                     part for part in (info.get("city"), info.get("region"), info.get("country")) if part
                 )
+                self.timezone = info.get("timezone") or None
+                # The dialogue fills {{current_time}} on every LLM call
+                if getattr(conn, "dialogue", None) is not None:
+                    conn.dialogue.timezone = self.timezone
                 if info.get("lat") and info.get("lon"):
                     # QWeather takes "lon,lat" and returns the nearest city
                     self.weather_location = f"{float(info['lon']):.2f},{float(info['lat']):.2f}"
@@ -151,7 +161,7 @@ class PromptManager:
                     self.context_data = ""
 
             self.logger.bind(tag=TAG).info(
-                f"Context: location '{self.local_address or 'unknown'}', weather "
+                f"Context: location '{self.local_address or 'unknown'}' ({getattr(self, 'timezone', None) or 'server time'}), weather "
                 f"{'pre-fetched' if self.weather_info and not self.weather_info.startswith('Unavailable') else 'unavailable'}"
             )
         except Exception as e:
