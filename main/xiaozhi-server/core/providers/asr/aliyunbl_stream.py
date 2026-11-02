@@ -201,6 +201,12 @@ class ASRProvider(ASRProviderBase):
                         # Determine whether this is the final result (sentence_end is True and end_time is not null)
                         is_final = sentence_end and end_time is not None
 
+                        # An empty final (a cough, breath or noise segment) must not end the
+                        # user's turn in auto mode: keep listening for the real sentence
+                        if is_final and not text.strip() and conn.client_listen_mode != "manual":
+                            logger.bind(tag=TAG).debug("Empty final result ignored")
+                            continue
+
                         if is_final:
                             logger.bind(tag=TAG).info(f"Recognized text: {text}")
 

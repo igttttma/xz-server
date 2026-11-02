@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 from core.utils.dialogue import Message
 from core.providers.asr.dto.dto import InterfaceType
 from core.handle.receiveAudioHandle import startToChat
-from core.handle.helloHandle import playWakeupResponse
+from core.handle.helloHandle import playWakeupResponse, mark_just_woken
 from core.handle.reportHandle import enqueue_asr_report
 from core.handle.sendAudioHandle import send_stt_message, send_tts_message
 from core.handle.textMessageHandler import TextMessageHandler
@@ -118,12 +118,12 @@ class ListenTextMessageHandler(TextMessageHandler):
                     await send_tts_message(conn, "stop", None)
                     conn.client_is_speaking = False
                 elif is_wakeup_words:
-                    conn.just_woken_up = True
+                    mark_just_woken(conn)
                     # Report plain text data (reusing the ASR reporting feature, but without audio data)
                     enqueue_asr_report(conn, "Hey there", [])
                     await startToChat(conn, "Hey there")
                 else:
-                    conn.just_woken_up = True
+                    mark_just_woken(conn)
                     # Report plain text data (reusing the ASR reporting feature, but without audio data)
                     enqueue_asr_report(conn, original_text, [])
                     # Otherwise the LLM needs to reply to the text content
@@ -135,7 +135,7 @@ class ListenTextMessageHandler(TextMessageHandler):
         mode = conn.config.get("wake_greeting", "cached")
         conn.logger.bind(tag=TAG).info(f"Wake event: {text} (greeting: {mode})")
         if mode == "llm":
-            conn.just_woken_up = True
+            mark_just_woken(conn)
             enqueue_asr_report(conn, text, [])
             await startToChat(conn, text)
             return
@@ -143,6 +143,6 @@ class ListenTextMessageHandler(TextMessageHandler):
             await playWakeupResponse(conn)
             return
         # "none", or no TTS available: just let the client start listening
-        conn.just_woken_up = True
+        mark_just_woken(conn)
         await send_tts_message(conn, "stop", None)
         conn.client_is_speaking = False

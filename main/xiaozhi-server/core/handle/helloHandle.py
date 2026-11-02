@@ -143,9 +143,31 @@ def greeting_file(folder: str, name: str) -> str | None:
     return path if os.path.isfile(path) else None
 
 
+WAKE_MUTE_SECONDS = 2.0
+
+
+def mark_just_woken(conn: "ConnectionHandler") -> None:
+    """Ignore microphone audio for WAKE_MUTE_SECONDS from now, so a device that keeps
+    streaming while the greeting plays does not send the greeting back to the ASR.
+
+    The window starts at the wake, not at the next audio frame: clients that stop
+    sending during the greeting (BlimpMate opens the mic only after it has played)
+    would otherwise lose the first 2 s of the user's first sentence."""
+    conn.just_woken_up = True
+    task = getattr(conn, "vad_resume_task", None)
+    if task and not task.done():
+        task.cancel()
+
+    async def resume():
+        await asyncio.sleep(WAKE_MUTE_SECONDS)
+        conn.just_woken_up = False
+
+    conn.vad_resume_task = asyncio.create_task(resume())
+
+
 async def playWakeupResponse(conn: "ConnectionHandler"):
     """Play a random pre-generated wake greeting in the current TTS voice."""
-    conn.just_woken_up = True
+    mark_just_woken(conn)
 
     ready = [
         i for i in range(len(WAKE_GREETINGS))

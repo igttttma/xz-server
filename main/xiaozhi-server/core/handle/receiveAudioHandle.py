@@ -20,12 +20,8 @@ TAG = __name__
 async def handleAudioMessage(conn: "ConnectionHandler", pcm_frame):
     # Whether someone is speaking in the current frame
     have_voice = conn.vad.is_vad(conn, pcm_frame)
-    # If the device has just been woken up, briefly ignore VAD detection
-    if hasattr(conn, "just_woken_up") and conn.just_woken_up:
-        have_voice = False
-        # Schedule resuming VAD detection after a short delay
-        if not hasattr(conn, "vad_resume_task") or conn.vad_resume_task.done():
-            conn.vad_resume_task = asyncio.create_task(resume_vad_detection(conn))
+    # Just woken up: drop audio until the window started by mark_just_woken() ends
+    if getattr(conn, "just_woken_up", False):
         return
     # Server-side AEC needs to trigger an abort in real time
     if conn.client_aec and have_voice:
@@ -35,12 +31,6 @@ async def handleAudioMessage(conn: "ConnectionHandler", pcm_frame):
     await no_voice_close_connect(conn, have_voice)
     # Receive audio
     await conn.asr.receive_audio(conn, pcm_frame, have_voice)
-
-
-async def resume_vad_detection(conn: "ConnectionHandler"):
-    # Resume VAD detection after 2 seconds
-    await asyncio.sleep(2)
-    conn.just_woken_up = False
 
 
 async def startToChat(conn: "ConnectionHandler", text):
