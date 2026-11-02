@@ -90,10 +90,13 @@ OMNI_FIELDS = {
     "omni_search": ("enable_search", "bool", None),
     "omni_tools": ("tools", "bool", None),
     "omni_instructions": ("instructions", "longtext", None),
+    "omni_expressions": ("expressions", "bool", None),
+    "omni_expression_model": ("expression_model", "text", None),
 }
 OMNI_DEFAULTS = {"enabled": False, "model": "qwen3.8-omni-flash-realtime", "voice": "Tina",
                  "turn_detection": "server_vad", "vad_threshold": 0.5, "silence_duration_ms": 800,
-                 "enable_search": False, "tools": True, "instructions": ""}
+                 "enable_search": False, "tools": True, "instructions": "",
+                 "expressions": True, "expression_model": "qwen3.6-flash"}
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 # Text-to-speech clips for the audio library
 TTS_TEXT_MAX = 5000

@@ -129,6 +129,10 @@ omni_realtime:
   enable_search: false       # web search; turns tools off (they cannot be combined)
   tools: true                # the enabled plugins and device tools, as function calls
   instructions: ""           # added after the persona prompt
+  # Avatar expression: a small text model picks it from the reply's first sentence
+  # (the realtime model can't write face tags, and a tool call would delay the voice)
+  expressions: true
+  expression_model: qwen3.6-flash
 
 exit_commands:
   - "exit"

@@ -485,6 +485,14 @@
       <div><b style="font-family:inherit">Web search</b>
         <span>The model can look things up online. It cannot be combined with tools, so turning it on turns tools off.</span></div>
     </div>
+    <div class="switch">
+      <input id="omni_expressions" type="checkbox">
+      <div><b style="font-family:inherit">Avatar expressions</b>
+        <span>A small text model reads each reply as it starts and picks the avatar's face (Joy, Sadness, Surprise, ...). The voice is not delayed; the face changes about 1 s into the reply. Asking for a face ("make a happy face") always works: the model then calls the avatar's expression tool.</span></div>
+    </div>
+    <label for="omni_expression_model">Expression model</label>
+    <input id="omni_expression_model" type="text">
+    <div class="hint">A fast text model on the same platform; qwen3.6-flash picks well in about 0.7 s.</div>
     <label for="omni_instructions" style="margin-top:12px">Extra instructions</label>
     <textarea id="omni_instructions" spellcheck="false" style="min-height:80px" placeholder="Optional; added after the persona prompt"></textarea>
     <div class="hint">The model gets the persona prompt above, short rules for speaking aloud, the date, location and weather, then this.</div>
@@ -518,7 +526,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const OMNI_FIELDS = ["omni_enabled", "omni_model", "omni_voice", "omni_turn_detection", "omni_silence_ms", "omni_vad_threshold", "omni_max_tokens", "omni_temperature", "omni_top_p", "omni_top_k", "omni_presence_penalty", "omni_repetition_penalty", "omni_seed", "omni_tools", "omni_search", "omni_instructions"];
+const OMNI_FIELDS = ["omni_enabled", "omni_model", "omni_voice", "omni_turn_detection", "omni_silence_ms", "omni_vad_threshold", "omni_max_tokens", "omni_temperature", "omni_top_p", "omni_top_k", "omni_presence_penalty", "omni_repetition_penalty", "omni_seed", "omni_tools", "omni_search", "omni_instructions", "omni_expressions", "omni_expression_model"];
 const FIELDS = ["asr_model", "asr_language", "llm_model", "tts_model", "voice", "tts_language", "prompt", "wake_greeting", "barge_in", "max_tokens", "idle_timeout", "idle_end", "speech_end_ms", "tts_gain_db", "memory_enabled", ...OMNI_FIELDS];
 // Voices of qwen3.8-omni-flash-realtime (Bailian omni voice list)
 const OMNI_VOICES = [

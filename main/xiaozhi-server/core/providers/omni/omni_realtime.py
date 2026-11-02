@@ -21,6 +21,7 @@ closes when a conversation ends (goodbye or idle) and the next wake starts fresh
 import asyncio
 import base64
 import json
+import os
 import re
 import time
 import uuid
@@ -55,9 +56,17 @@ SAMPLING_FIELDS = {
     "repetition_penalty": float,
     "seed": int,
 }
-# Device tools left out: each call is a round trip before the reply starts
+# Device tools left out: each call is a round trip before the reply starts. The
+# avatar's expression is picked from the reply text instead (_pick_expression);
+# set_expression stays for when the user asks for a face (OMNI_RULES).
 SKIPPED_TOOL_WORDS = ("expression", "emotion")
+EXPRESSION_TOOL_WORD = "set_expression"
+DEFAULT_EXPRESSION_MODEL = "qwen3.6-flash"
+EXPRESSION_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 TOOL_TIMEOUT = 30
+# A reply that gets no event from the model for this long is given up (the Blimp
+# would otherwise stay "speaking" with its microphone closed)
+STALL_TIMEOUT = 15
 SENTENCE_END = re.compile(r"(.+?[.!?。！？…]+[\"'”’)]*)(\s+|$)", re.S)
 
 OMNI_RULES = """
@@ -66,6 +75,8 @@ You are talking out loud: the user hears your voice through the Blimp's small sp
 - Plain spoken language only: no markdown, lists, emoji, tags or stage directions.
 - Reply in the language the user speaks unless they ask for another one.
 - Whenever the user asks you to look at or see something, call camera_take_photo first, every time.
+- Only when the user asks you to make a face or change your expression (e.g. "look happy", "make a sad face"),
+  call self_set_expression with the closest expression, then answer briefly. Never call it on your own.
 - When the user says goodbye, bye, see you, good night, that's all, or asks you to stop talking, you MUST call
   handle_exit_intent (with one short farewell) instead of answering in words: that ends the conversation.
 """.strip()
@@ -98,6 +109,15 @@ class OmniRealtimeSession:
         self.encoder = None
         self.out_rate = None
         self._vllm = None
+        # Avatar expression: one per reply, from its first sentence
+        self.last_user_text = ""
+        self.face_turn_id = None
+        self.face_set_by_tool = False  # the user asked for a face this turn: no automatic pick
+        self._expression_client = None
+        # Stall watchdog (see STALL_TIMEOUT)
+        self.response_open = False
+        self.last_event_at = time.monotonic()
+        self._watchdog: Optional[asyncio.Task] = None
         # Diagnostics: audio sent to the model this session, and the current listen start
         self.sent_ms = 0
         self.listen_started_at = None
@@ -146,6 +166,8 @@ class OmniRealtimeSession:
             if msg.get("type") == "error":
                 raise RuntimeError(f"session.update rejected: {msg.get('error')}")
         self._reader = asyncio.create_task(self._read_loop(self.ws))
+        if self._watchdog is None or self._watchdog.done():
+            self._watchdog = asyncio.create_task(self._watch_stalls())
         self.ready.set()
         logger.bind(tag=TAG).info(
             f"Omni realtime session ready: {model}, voice {self.cfg.get('voice') or DEFAULT_VOICE}, "
@@ -220,7 +242,8 @@ class OmniRealtimeSession:
         for desc in handler.get_functions() or []:
             fn = desc.get("function", {})
             name = fn.get("name", "")
-            if not name or any(w in name.lower() for w in SKIPPED_TOOL_WORDS):
+            lname = name.lower()
+            if not name or (any(w in lname for w in SKIPPED_TOOL_WORDS) and EXPRESSION_TOOL_WORD not in lname):
                 continue
             tools.append({"type": "function", "function": {
                 "name": name,
@@ -241,6 +264,7 @@ class OmniRealtimeSession:
         self.sent_ms = 0
         self._pending_audio.clear()
         self.turn_active = False
+        self.response_open = False
         self.pending_calls = []
         if self._reader and not self._reader.done():
             self._reader.cancel()
@@ -325,6 +349,27 @@ class OmniRealtimeSession:
         self.turn_active = False
         self.pending_calls = []
 
+    async def _watch_stalls(self):
+        while not self.conn.stop_event.is_set():
+            await asyncio.sleep(2)
+            waiting = self.response_open or self.turn_active
+            if not waiting or time.monotonic() - self.last_event_at < STALL_TIMEOUT:
+                continue
+            logger.bind(tag=TAG).warning(
+                f"Omni realtime: no event from the model for {STALL_TIMEOUT}s during a reply; giving it up")
+            self.response_open = False
+            self.pending_calls = []
+            try:
+                await self._send({"type": "response.cancel"})
+            except Exception:
+                pass
+            if self.turn_active:
+                self._end_turn()
+            else:
+                # Nothing was played yet: tell the Blimp the (empty) reply is over
+                from core.handle.sendAudioHandle import send_tts_message
+                await send_tts_message(self.conn, "stop")
+
     # ---------- output ----------
 
     async def _read_loop(self, ws):
@@ -346,6 +391,12 @@ class OmniRealtimeSession:
     async def _handle(self, msg: dict):
         conn = self.conn
         t = msg.get("type", "")
+        self.last_event_at = time.monotonic()
+        if t == "response.created":
+            self.response_open = True
+        # Diagnostics: OMNI_TRACE=1 logs every model event except the deltas
+        if os.environ.get("OMNI_TRACE") and not t.endswith(".delta"):
+            logger.bind(tag=TAG).info(f"Omni trace: {t} {json.dumps(msg, ensure_ascii=False)[:200]}")
         if t == "input_audio_buffer.speech_stopped":
             logger.bind(tag=TAG).info(f"Omni realtime: speech stopped at {msg.get('audio_end_ms')} ms (sent {self.sent_ms} ms)")
         elif t == "conversation.item.input_audio_transcription.failed":
@@ -367,6 +418,7 @@ class OmniRealtimeSession:
                 logger.bind(tag=TAG).info(f"Recognized text: {text}")
                 await conn.websocket.send(json.dumps({"type": "stt", "text": text, "session_id": conn.session_id}))
                 self._remember("user", text)
+                self.last_user_text = text
         elif t == "response.audio_transcript.delta":
             await self._begin_turn()
             self.transcript_buf += msg.get("delta", "")
@@ -417,11 +469,54 @@ class OmniRealtimeSession:
             m = SENTENCE_END.match(self.transcript_buf)
             if not m:
                 break
-            self._put((SentenceType.FIRST, None, m.group(1).strip()))
+            self._sentence(m.group(1).strip())
             self.transcript_buf = self.transcript_buf[m.end():]
         if final and self.transcript_buf.strip():
-            self._put((SentenceType.FIRST, None, self.transcript_buf.strip()))
+            self._sentence(self.transcript_buf.strip())
             self.transcript_buf = ""
+
+    def _sentence(self, text: str):
+        self._put((SentenceType.FIRST, None, text))
+        # The reply's first sentence sets the avatar's expression
+        if (self.face_turn_id != self.turn_sentence_id and self.cfg.get("expressions", True)
+                and not self.face_set_by_tool):
+            self.face_turn_id = self.turn_sentence_id
+            asyncio.create_task(self._pick_expression(self.last_user_text, text, self.turn_sentence_id))
+
+    async def _pick_expression(self, user_text: str, sentence: str, sentence_id: str):
+        """A small text model reads the reply as it starts and picks the avatar's face
+        (the realtime model speaks its text, so it cannot write face tags, and a tool
+        call would delay the voice by a round trip)."""
+        from core.utils.textUtils import EXPRESSIONS, EXPRESSION_NAMES, send_expression
+        started = time.monotonic()
+        try:
+            if self._expression_client is None:
+                import openai
+                config = self.conn.config
+                llm = config.get("LLM", {}).get(config.get("selected_module", {}).get("LLM"), {}) or {}
+                self._expression_client = openai.AsyncOpenAI(
+                    api_key=self._api_key(), base_url=llm.get("base_url") or EXPRESSION_BASE_URL, timeout=5)
+            system = (
+                "You pick the facial expression of a cute robot avatar as it speaks a reply. Expressions: "
+                + "; ".join(f"{n} ({m})" for n, m in EXPRESSIONS)
+                + ". Answer with exactly one expression name. Use None for plain or factual replies."
+            )
+            reply = await self._expression_client.chat.completions.create(
+                model=self.cfg.get("expression_model") or DEFAULT_EXPRESSION_MODEL,
+                max_tokens=6, temperature=0, extra_body={"enable_thinking": False},
+                messages=[{"role": "system", "content": system},
+                          {"role": "user", "content": f"User said: {user_text or '(nothing)'}\nRobot replies: {sentence}"}],
+            )
+            name = EXPRESSION_NAMES.get(re.sub(r"[^a-z]", "", (reply.choices[0].message.content or "").lower()))
+        except Exception as e:
+            logger.bind(tag=TAG).warning(f"Omni realtime expression pick failed: {e}")
+            return
+        # Too late: the reply was interrupted or a new one started
+        if name is None or sentence_id != self.conn.sentence_id or self.conn.client_abort:
+            return
+        logger.bind(tag=TAG).info(f"Omni realtime expression: {name} ({time.monotonic() - started:.2f}s)")
+        if name != "None":
+            await send_expression(self.conn, name)
 
     def _queue_audio(self, pcm24k: bytes):
         if not pcm24k or not self.turn_active:
@@ -441,6 +536,7 @@ class OmniRealtimeSession:
         self.conn.tts.tts_audio_queue.put((sentence_type, audio, text, self.turn_sentence_id))
 
     async def _response_done(self, response: dict):
+        self.response_open = False
         status = response.get("status")
         usage = response.get("usage") or {}
         if usage:
@@ -472,6 +568,7 @@ class OmniRealtimeSession:
         # LAST sends `tts stop` once the audio has played (and ends the session if asked)
         self._put((SentenceType.LAST, [], None))
         self.turn_active = False
+        self.face_set_by_tool = False
 
     def _remember(self, role: str, text: str):
         """Keep the dialogue for memory summaries, like the normal pipeline."""
@@ -489,6 +586,8 @@ class OmniRealtimeSession:
         name = call.get("name", "")
         args = call.get("arguments") or "{}"
         logger.bind(tag=TAG).info(f"Omni realtime tool call: {name}({args[:120]})")
+        if EXPRESSION_TOOL_WORD in name.lower():
+            self.face_set_by_tool = True
         try:
             result = await asyncio.wait_for(
                 conn.func_handler.handle_llm_function_call(
