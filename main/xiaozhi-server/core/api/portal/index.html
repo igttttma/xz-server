@@ -117,6 +117,28 @@
   td.actions button + button { margin-left: 6px; }
   tr.playing td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
   tr.playing td.title b::after { content: "  ▶ playing"; color: var(--accent); font-size: 12px; }
+  /* Phones: each clip becomes a card, Play now sits right next to the title. */
+  @media (max-width: 640px) {
+    .table { overflow-x: visible; }
+    .table thead { display: none; }
+    .table table, .table tbody { display: block; }
+    .table td.empty { display: block; border-top: 0; }
+    tr.clip { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr) auto; column-gap: 10px; row-gap: 4px; padding: 10px; border-top: 1px solid var(--line); }
+    tbody tr.clip:first-child { border-top: 0; }
+    tr.clip td { padding: 0; border-top: 0; background: none !important; }
+    tr.clip.playing { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+    tr.clip td.idx { grid-row: 1; grid-column: 1; padding-top: 2px; }
+    tr.clip td.title { grid-row: 1; grid-column: 2 / 5; min-width: 0; }
+    tr.clip td.actions { grid-row: 1; grid-column: 5; align-self: start; display: flex; flex-direction: column; gap: 6px; }
+    tr.clip td.actions button + button { margin-left: 0; }
+    tr.clip td.actions button { padding: 7px 12px; font-size: 13px; }
+    tr.clip td.len { grid-row: 2; grid-column: 2; font-size: 12px; }
+    tr.clip td.size { grid-row: 2; grid-column: 3; font-size: 12px; }
+    tr.clip td.cache { grid-row: 2; grid-column: 4; }
+    tr.clip td.player { grid-row: 3; grid-column: 2 / 6; margin-top: 4px; min-width: 0; }
+    tr.clip td audio { width: 100%; }
+    tr.clip td video { width: 100%; height: auto; max-height: 50vh; aspect-ratio: 16 / 9; }
+  }
   .hint.ok { color: var(--ok); } .hint.err { color: var(--err); }
   .expr { display: flex; flex-wrap: wrap; gap: 6px; }
   .expr button.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
@@ -1022,8 +1044,8 @@ function mediaServer(kind) {
         const row = document.createElement("tr");
         row.className = "clip";
         row.dataset.id = c.id;
-        row.innerHTML = `<td class="num"></td><td class="title"><b></b><small></small></td><td class="num">…</td><td class="num"></td>
-          ${video ? `<td class="cache"></td><td><video controls preload="metadata" playsinline></video></td>` : `<td><audio controls preload="metadata"></audio></td>`}
+        row.innerHTML = `<td class="num idx"></td><td class="title"><b></b><small></small></td><td class="num len">…</td><td class="num size"></td>
+          ${video ? `<td class="cache"></td><td class="player"><video controls preload="metadata" playsinline></video></td>` : `<td class="player"><audio controls preload="metadata"></audio></td>`}
           <td class="actions"><button type="button" class="small primary" data-play>Play now</button><button type="button" class="small" data-delete>Delete</button></td>`;
         const cells = row.querySelectorAll("td");
         cells[0].textContent = i + 1;
