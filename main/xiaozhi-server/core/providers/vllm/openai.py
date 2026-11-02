@@ -18,7 +18,7 @@ class VLLMProvider(VLLMProviderBase):
             self.base_url = config.get("url")
 
         param_defaults = {
-            "max_tokens": (500, int),
+            "max_tokens": (300, int),
             "temperature": (0.7, lambda x: round(float(x), 1)),
             "top_p": (1.0, lambda x: round(float(x), 1)),
         }
@@ -37,7 +37,15 @@ class VLLMProvider(VLLMProviderBase):
         model_key_msg = check_model_key("VLLM", self.api_key)
         if model_key_msg:
             logger.bind(tag=TAG).error(model_key_msg)
-        self.client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
+        # A photo description is waited on mid-conversation: fail fast instead of
+        # the SDK's 10-minute timeout and two retries
+        self.timeout = float(config.get("timeout") or 12)
+        self.client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url,
+                                    timeout=self.timeout, max_retries=1)
+        # Qwen models on DashScope think by default: 4-6 s per photo instead of 1-2 s
+        self.extra_body = {}
+        if "dashscope" in str(self.base_url or ""):
+            self.extra_body["enable_thinking"] = bool(config.get("enable_thinking", False))
 
     def response(self, question, base64_image):
         question = question + "(Please reply in English)"
@@ -58,7 +66,8 @@ class VLLMProvider(VLLMProviderBase):
             ]
 
             response = self.client.chat.completions.create(
-                model=self.model_name, messages=messages, stream=False
+                model=self.model_name, messages=messages, stream=False,
+                max_tokens=self.max_tokens, extra_body=self.extra_body or None,
             )
 
             return response.choices[0].message.content

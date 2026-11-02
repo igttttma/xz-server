@@ -64,6 +64,8 @@ EXPRESSION_TOOL_WORD = "set_expression"
 DEFAULT_EXPRESSION_MODEL = "qwen3.6-flash"
 EXPRESSION_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 TOOL_TIMEOUT = 30
+# A photo's description (VLLM) is given up after this; the model then says so
+PHOTO_TIMEOUT = 15
 # A reply that gets no event from the model for this long is given up (the Blimp
 # would otherwise stay "speaking" with its microphone closed)
 STALL_TIMEOUT = 15
@@ -114,6 +116,11 @@ class OmniRealtimeSession:
         self.face_turn_id = None
         self.face_set_by_tool = False  # the user asked for a face this turn: no automatic pick
         self._expression_client = None
+        # Tool calls run in their own task, so the model's events (and its
+        # keepalive) keep being read meanwhile; turn_gen tells a finished tool
+        # whether its turn was interrupted in the meantime
+        self.tools_running = False
+        self.turn_gen = 0
         # Stall watchdog (see STALL_TIMEOUT)
         self.response_open = False
         self.last_event_at = time.monotonic()
@@ -266,6 +273,7 @@ class OmniRealtimeSession:
         self.sent_ms = 0
         self._pending_audio.clear()
         self.turn_active = False
+        self.turn_gen += 1
         self.response_open = False
         self.pending_calls = []
         if self._reader and not self._reader.done():
@@ -350,12 +358,14 @@ class OmniRealtimeSession:
             except Exception:
                 pass
         self.turn_active = False
+        self.turn_gen += 1
         self.pending_calls = []
 
     async def _watch_stalls(self):
         while not self.conn.stop_event.is_set():
             await asyncio.sleep(2)
-            waiting = self.response_open or self.turn_active
+            # A running tool (a photo being taken and described) isn't a stall
+            waiting = (self.response_open or self.turn_active) and not self.tools_running
             if not waiting or time.monotonic() - self.last_event_at < STALL_TIMEOUT:
                 continue
             logger.bind(tag=TAG).warning(
@@ -413,6 +423,7 @@ class OmniRealtimeSession:
                 from core.handle.abortHandle import handleAbortMessage
                 logger.bind(tag=TAG).info("Omni realtime: user interrupted the reply")
                 self.turn_active = False
+                self.turn_gen += 1
                 self.pending_calls = []
                 await handleAbortMessage(conn)
         elif t == "conversation.item.input_audio_transcription.completed":
@@ -552,12 +563,11 @@ class OmniRealtimeSession:
             self.turn_active = False
             return
         if calls:
-            # The turn goes on: the model speaks again after the tool results
-            for call in calls:
-                output = await self._run_tool(call)
-                await self._send({"type": "conversation.item.create", "item": {
-                    "type": "function_call_output", "call_id": call.get("call_id"), "output": output}})
-            await self._send({"type": "response.create"})
+            # The turn goes on: the model speaks again after the tool results. Not
+            # awaited here: this runs inside the read loop, and a slow tool (a photo
+            # takes seconds) would stop the connection being read until it died.
+            self.tools_running = True
+            asyncio.create_task(self._finish_calls(calls, self.turn_gen))
             return
         if self.turn_active:
             self._end_turn()
@@ -582,6 +592,25 @@ class OmniRealtimeSession:
             pass
 
     # ---------- tools ----------
+
+    async def _finish_calls(self, calls: list, gen: int):
+        try:
+            outputs = [(call, await self._run_tool(call)) for call in calls]
+            # The model expects an output for each call, even if the turn is over
+            for call, output in outputs:
+                await self._send({"type": "conversation.item.create", "item": {
+                    "type": "function_call_output", "call_id": call.get("call_id"), "output": output}})
+            if gen != self.turn_gen or self.ws is None:
+                logger.bind(tag=TAG).info("Omni realtime: turn ended while a tool ran; no reply to it")
+                return
+            await self._send({"type": "response.create"})
+        except Exception as e:
+            logger.bind(tag=TAG).error(f"Omni realtime tool results failed: {type(e).__name__}: {e}")
+            if self.turn_active and gen == self.turn_gen:
+                self._end_turn()
+        finally:
+            self.tools_running = False
+            self.last_event_at = time.monotonic()
 
     async def _run_tool(self, call: dict) -> str:
         from plugins_func.register import Action
@@ -627,10 +656,16 @@ class OmniRealtimeSession:
                 return "A photo was taken, but no vision model is configured to read it."
             self._vllm = create_instance(vcfg.get("type", name), vcfg)
         b64 = data_url.split(",", 1)[-1]
+        # Short: the description is waited on mid-reply, and the model retells it anyway
+        question = f"{question} Answer in one or two short sentences, only what matters for that."
         started = time.monotonic()
         try:
-            text = await asyncio.to_thread(self._vllm.response, question, b64)
+            text = await asyncio.wait_for(asyncio.to_thread(self._vllm.response, question, b64), PHOTO_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.bind(tag=TAG).warning(f"Omni realtime photo description timed out after {PHOTO_TIMEOUT}s")
+            return "A photo was taken, but reading it took too long. Tell the user briefly and offer to try again."
         except Exception as e:
-            return f"A photo was taken but could not be read: {e}"
+            logger.bind(tag=TAG).warning(f"Omni realtime photo description failed: {type(e).__name__}: {e}")
+            return "A photo was taken, but it could not be read. Tell the user briefly and offer to try again."
         logger.bind(tag=TAG).info(f"Omni realtime photo described in {time.monotonic() - started:.1f}s")
         return f"Photo taken just now. What the camera shows: {text}"
