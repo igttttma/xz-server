@@ -129,6 +129,8 @@ class OmniRealtimeSession:
         self.sent_ms = 0
         self.listen_started_at = None
         self.listen_first_audio_logged = False
+        # The user turn the model's VAD has open (speech started, not yet stopped)
+        self.open_speech_item = None
 
     # ---------- connection ----------
 
@@ -309,6 +311,8 @@ class OmniRealtimeSession:
         """The Blimp opened its microphone (listen start)."""
         self.listen_started_at = time.monotonic()
         self.listen_first_audio_logged = False
+        self.listen_levels = []  # mic level per 0.5 s for the first seconds (diagnostics)
+        self._level_acc = []
         logger.bind(tag=TAG).info(f"Omni realtime: listening (model has {self.sent_ms} ms of audio so far)")
 
     async def _append_audio(self, pcm16k: bytes):
@@ -318,11 +322,31 @@ class OmniRealtimeSession:
             logger.bind(tag=TAG).info(
                 f"Omni realtime: first audio {time.monotonic() - self.listen_started_at:.2f}s after listen start "
                 f"(audio position {self.sent_ms} ms)")
+        self._track_level(pcm16k)
         try:
             await self._send({"type": "input_audio_buffer.append", "audio": base64.b64encode(pcm16k).decode()})
         except Exception as e:
             logger.bind(tag=TAG).warning(f"Omni realtime audio send failed: {e}")
             await self.close(reopen=False)
+
+    LEVEL_SECONDS = 8
+
+    def _track_level(self, pcm16k: bytes):
+        """Diagnostics: after each listen start, log the mic level (dBFS) per 0.5 s for
+        the first LEVEL_SECONDS, to tell a silent mic from speech the model's VAD missed."""
+        levels = getattr(self, "listen_levels", None)
+        if levels is None or len(levels) >= self.LEVEL_SECONDS * 2:
+            return
+        self._level_acc.append(pcm16k)
+        if sum(len(b) for b in self._level_acc) < 16000:  # 0.5 s of 16 kHz 16-bit
+            return
+        samples = np.frombuffer(b"".join(self._level_acc), dtype=np.int16).astype(np.float32) / 32768
+        self._level_acc = []
+        rms = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
+        levels.append(round(20 * np.log10(max(rms, 1e-5))))
+        if len(levels) == self.LEVEL_SECONDS * 2:
+            logger.bind(tag=TAG).info(
+                f"Omni realtime: mic level after listen start, dBFS per 0.5 s: {' '.join(map(str, levels))}")
 
     async def send_text(self, text: str):
         """Typed input (portal, chat panel): a user message, then a reply."""
@@ -339,9 +363,35 @@ class OmniRealtimeSession:
             logger.bind(tag=TAG).warning(f"Omni realtime prewarm failed (will retry on use): {e}")
             await self.close(reopen=False)
 
+    async def drop_pending_input(self):
+        """Forget a user turn the model is still waiting on, and any reply under way.
+
+        When the Blimp stops sending audio in the middle of speech (conversation ended,
+        mic closed), the model's VAD never sees the speech end and waits for it; a
+        response.create in that state (the wake greeting) is ignored and the Blimp
+        stays silent. Seen 2026-11-03: wake 3 s after a goodbye, no greeting. Clearing
+        the buffer and deleting the item don't release the VAD (tested), so such a
+        session is replaced by a fresh one (~0.15 s); otherwise any leftover is cleared."""
+        if self.ws is None or not self.ready.is_set():
+            return
+        if self.open_speech_item:
+            logger.bind(tag=TAG).info(
+                "Omni realtime: the model still waits for an unfinished user turn; starting a fresh session")
+            self.open_speech_item = None
+            await self.close(reopen=False)
+            await self.ensure_connected()
+            return
+        try:
+            await self._send({"type": "response.cancel"})  # "not active" errors are ignored
+            await self._send({"type": "input_audio_buffer.clear"})
+        except Exception as e:
+            logger.bind(tag=TAG).warning(f"Omni realtime: could not clear pending input: {e}")
+        self.response_open = False
+
     async def greet(self):
         """Wake greeting in the model's own voice."""
         await self.ensure_connected()
+        await self.drop_pending_input()
         # Fresh time/weather and the device tools (they register after the session opened)
         await self._send({"type": "session.update", "session": {
             "instructions": self._instructions(), **({"tools": self._tools()} if self._uses_tools() else {})}})
@@ -410,6 +460,10 @@ class OmniRealtimeSession:
         # Diagnostics: OMNI_TRACE=1 logs every model event except the deltas
         if os.environ.get("OMNI_TRACE") and not t.endswith(".delta"):
             logger.bind(tag=TAG).info(f"Omni trace: {t} {json.dumps(msg, ensure_ascii=False)[:200]}")
+        if t == "input_audio_buffer.speech_started":
+            self.open_speech_item = msg.get("item_id")
+        elif t == "input_audio_buffer.speech_stopped":
+            self.open_speech_item = None
         if t == "input_audio_buffer.speech_stopped":
             logger.bind(tag=TAG).info(f"Omni realtime: speech stopped at {msg.get('audio_end_ms')} ms (sent {self.sent_ms} ms)")
         elif t == "conversation.item.input_audio_transcription.failed":

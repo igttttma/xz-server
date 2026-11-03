@@ -29,6 +29,7 @@ from ruamel.yaml.scalarstring import LiteralScalarString
 
 from config.config_loader import get_project_dir
 from core.media_library import AUDIO_TYPES, VIDEO_TYPES, MediaLibrary, UploadError
+from core.wake_samples import LABELS as WAKE_LABELS, WakeSamples
 from core.handle.helloHandle import greeting_file, greeting_signature
 from core.utils.modules_initialize import initialize_tts
 from core.utils.util import opus_datas_to_wav_bytes
@@ -674,6 +675,83 @@ class PortalHandler:
 
     async def handle_blimp_end_call(self, request: web.Request):
         return await self._call_command(request, "end_call", ("calling", "in_call"), "No call to end")
+
+    # ---------- wake word samples (recorded on the Blimp, for retraining) ----------
+
+    @property
+    def _wake_samples(self) -> WakeSamples:
+        if getattr(self, "_wake_samples_store", None) is None:
+            self._wake_samples_store = WakeSamples()
+        return self._wake_samples_store
+
+    async def handle_list_wake_samples(self, request: web.Request):
+        if (denied := self._guard(request)) is not None:
+            return denied
+        store = self._wake_samples
+        return web.json_response({"samples": store.list(), "counts": store.counts(), "labels": WAKE_LABELS})
+
+    async def handle_record_wake_sample(self, request: web.Request):
+        """Record a sample on the Blimp: {label, seconds}. Waits for the clip."""
+        if (denied := self._guard(request, mutating=True)) is not None:
+            return denied
+        body = await self._json_body(request)
+        label = body.get("label")
+        if label not in WAKE_LABELS:
+            return web.json_response({"error": "Unknown label"}, status=400)
+        try:
+            seconds = min(max(float(body.get("seconds", 2.5)), 0.5), 10.0)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "Bad duration"}, status=400)
+        distance = body.get("distance") if body.get("distance") in ("near", "mid", "far") else None
+        control = self._control
+        if not control.online:
+            return web.json_response({"error": "The Blimp is offline"}, status=409)
+        reply = await control.request(
+            {"type": "record_mic", "seconds": seconds, "keywords": "answer" if label == "answer" else "wake"},
+            timeout=seconds + 12,
+        )
+        if reply is None:
+            return web.json_response({"error": "No answer from the Blimp (is its app up to date?)"}, status=504)
+        if not reply.get("ok"):
+            return web.json_response({"error": reply.get("error") or "Recording failed"}, status=409)
+        try:
+            wav = base64.b64decode(reply.get("wav") or "", validate=True)
+        except ValueError:
+            wav = b""
+        if len(wav) < 44 or wav[:4] != b"RIFF":
+            return web.json_response({"error": "The Blimp sent no audio"}, status=502)
+        entry = await asyncio.to_thread(
+            self._wake_samples.add, label, wav,
+            score=reply.get("score"), level_dbfs=reply.get("level_dbfs"), distance=distance,
+            device=control.device_id,
+        )
+        self.logger.bind(tag=TAG).info(
+            f"Wake sample {entry['id']} ({label}): score {entry.get('score')}, level {entry.get('level_dbfs')} dBFS")
+        return web.json_response({"sample": entry, "counts": self._wake_samples.counts()})
+
+    async def handle_delete_wake_sample(self, request: web.Request):
+        if (denied := self._guard(request, mutating=True)) is not None:
+            return denied
+        if not await asyncio.to_thread(self._wake_samples.delete, request.match_info["id"]):
+            return web.json_response({"error": "No such sample"}, status=404)
+        return web.json_response({"ok": True, "counts": self._wake_samples.counts()})
+
+    async def handle_wake_sample_file(self, request: web.Request):
+        if (denied := self._guard(request)) is not None:
+            return denied
+        entry = self._wake_samples.get(request.match_info["id"])
+        if entry is None:
+            return web.Response(status=404, text="No such sample")
+        return web.FileResponse(self._wake_samples.path(entry), headers={"Content-Type": "audio/wav"})
+
+    async def handle_wake_samples_zip(self, request: web.Request):
+        if (denied := self._guard(request)) is not None:
+            return denied
+        data = await asyncio.to_thread(self._wake_samples.zip_bytes)
+        return web.Response(body=data, headers={
+            "Content-Type": "application/zip",
+            "Content-Disposition": f'attachment; filename="wake_samples_{time.strftime("%Y%m%d-%H%M")}.zip"',
+        })
 
     async def _json_body(self, request: web.Request) -> dict:
         try:

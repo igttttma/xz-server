@@ -15,13 +15,16 @@ Server -> client: {"type": "welcome"}, {"type": "settings", barge_in} (after wel
                   {"type": "set_loop", loop}, {"type": "answer_call" | "decline_call" | "end_call"},
                   {"type": "avatar", expression?, blink?, auto_blink?, auto_recover?},
                   {"type": "conversation", action: connect | disconnect | start | interrupt
-                  | send_text, text?}, {"type": "pong"}
+                  | send_text, text?}, {"type": "record_mic", id, seconds, keywords} (a wake word
+                  sample; answered with {"type": "reply", id, ok, wav?, score?, level_dbfs?, error?}),
+                  {"type": "pong"}
 Settings and the video list go to every Blimp; the other commands to the selected one.
 """
 
 import asyncio
 import json
 import time
+import uuid
 
 import websockets
 
@@ -56,6 +59,8 @@ class BlimpControl:
         self.on_connect = None
         # SpeakerHub (set by the websocket server): mirrors the selected Blimp's media
         self.speakers = None
+        # Commands waiting for the Blimp's {"type": "reply", id}
+        self._pending = {}
 
     # ---------- the selected device ----------
 
@@ -172,6 +177,10 @@ class BlimpControl:
             return
         if msg.get("type") == "ping":
             await device.websocket.send(json.dumps({"type": "pong"}))
+        elif msg.get("type") == "reply":
+            future = self._pending.pop(msg.get("id"), None)
+            if future is not None and not future.done():
+                future.set_result(msg)
         elif msg.get("type") == "state":
             old_status = (device.state.get("playback") or {}).get("status")
             device.state = {k: v for k, v in msg.items() if k != "type"}
@@ -194,6 +203,21 @@ class BlimpControl:
         if self.speakers is not None:
             self.speakers.media(message)
         return True
+
+    async def request(self, message: dict, timeout: float):
+        """Send a command to the selected Blimp and wait for its reply; None when it is
+        offline or doesn't answer in time."""
+        request_id = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        self._pending[request_id] = future
+        try:
+            if not await self.send({**message, "id": request_id}):
+                return None
+            return await asyncio.wait_for(future, timeout)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            self._pending.pop(request_id, None)
 
     async def broadcast(self, message: dict):
         """Send to every connected Blimp (settings, the video list)."""
