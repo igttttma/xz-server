@@ -69,6 +69,8 @@ PHOTO_TIMEOUT = 15
 # A reply that gets no event from the model for this long is given up (the Blimp
 # would otherwise stay "speaking" with its microphone closed)
 STALL_TIMEOUT = 15
+# Seconds for the model to start answering a wake greeting before the session is replaced
+GREET_TIMEOUT = 4
 SENTENCE_END = re.compile(r"(.+?[.!?。！？…]+[\"'”’)]*)(\s+|$)", re.S)
 
 OMNI_RULES = """
@@ -100,6 +102,11 @@ class OmniRealtimeSession:
         self.ready = asyncio.Event()
         self._connecting: Optional[asyncio.Task] = None
         self._reader: Optional[asyncio.Task] = None
+        # Bumped by close(): a connect still under way when the session is closed
+        # must not publish its socket (it raced close() and left a dead session)
+        self._generation = 0
+        # Set when the model starts a response (the greeting watchdog waits on it)
+        self._response_started = asyncio.Event()
         self._pending_audio = []
         # Current reply turn (spans the tool calls inside it)
         self.turn_active = False
@@ -146,35 +153,64 @@ class OmniRealtimeSession:
                 return key
         raise RuntimeError("omni_realtime has no API key")
 
+    def _alive(self) -> bool:
+        """A usable session: a socket, marked ready, with its reader still running."""
+        return (self.ws is not None and self.ready.is_set()
+                and self._reader is not None and not self._reader.done())
+
     async def ensure_connected(self):
-        if self.ws is not None and self.ready.is_set():
+        if self._alive():
             return
-        if self._connecting is None or self._connecting.done():
-            self._connecting = asyncio.create_task(self._connect())
-        await asyncio.shield(self._connecting)
+        if self.ws is not None or self.ready.is_set():
+            # Half-alive (reader gone, or ready without a socket): start over
+            logger.bind(tag=TAG).warning("Omni realtime: session not usable; reconnecting")
+            await self.close(reopen=False)
+        for attempt in (1, 2):
+            if self._connecting is None or self._connecting.done():
+                self._connecting = asyncio.create_task(self._connect())
+            try:
+                await asyncio.shield(self._connecting)
+                return
+            except RuntimeError as e:
+                # A connect that lost the race with close(): try once more
+                if attempt == 2 or "while connecting" not in str(e):
+                    raise
 
     async def _connect(self):
         model = self.cfg.get("model") or DEFAULT_MODEL
         started = time.monotonic()
+        generation = self._generation
         self.ready.clear()
-        self.ws = await websockets.connect(
+        # The socket stays private until the session is set up: publishing it early
+        # let a concurrent close() take it, leaving a "ready" session without a
+        # reader (2026-11-03: no greeting after a goodbye)
+        ws = await websockets.connect(
             f"{URL}?model={model}",
             additional_headers={"Authorization": f"Bearer {self._api_key()}"},
             max_size=None,
             ping_interval=20,
             ping_timeout=20,
         )
-        first = json.loads(await asyncio.wait_for(self.ws.recv(), 10))
-        if first.get("type") != "session.created":
-            raise RuntimeError(f"unexpected first event: {first}")
-        await self._send({"type": "session.update", "session": self._session_config()})
-        while True:
-            msg = json.loads(await asyncio.wait_for(self.ws.recv(), 10))
-            if msg.get("type") == "session.updated":
-                break
-            if msg.get("type") == "error":
-                raise RuntimeError(f"session.update rejected: {msg.get('error')}")
-        self._reader = asyncio.create_task(self._read_loop(self.ws))
+        try:
+            first = json.loads(await asyncio.wait_for(ws.recv(), 10))
+            if first.get("type") != "session.created":
+                raise RuntimeError(f"unexpected first event: {first}")
+            await ws.send(json.dumps({"type": "session.update", "session": self._session_config()}, ensure_ascii=False))
+            while True:
+                msg = json.loads(await asyncio.wait_for(ws.recv(), 10))
+                if msg.get("type") == "session.updated":
+                    break
+                if msg.get("type") == "error":
+                    raise RuntimeError(f"session.update rejected: {msg.get('error')}")
+        except BaseException:
+            await ws.close()
+            raise
+        if generation != self._generation:
+            # close() ran meanwhile: this session isn't wanted any more
+            await ws.close()
+            raise RuntimeError("session closed while connecting")
+        self.ws = ws
+        self._reader = asyncio.create_task(self._read_loop(ws))
         if self._watchdog is None or self._watchdog.done():
             self._watchdog = asyncio.create_task(self._watch_stalls())
         self.ready.set()
@@ -264,12 +300,15 @@ class OmniRealtimeSession:
         return tools
 
     async def _send(self, event: dict):
-        if self.ws is not None:
-            await self.ws.send(json.dumps(event, ensure_ascii=False))
+        if self.ws is None:
+            logger.bind(tag=TAG).warning(f"Omni realtime: no session; dropped {event.get('type')}")
+            return
+        await self.ws.send(json.dumps(event, ensure_ascii=False))
 
     async def close(self, reopen: bool = True):
         """End the model session (its context is gone). With reopen, a fresh one is
         opened in the background for the next conversation."""
+        self._generation += 1
         ws, self.ws = self.ws, None
         self.ready.clear()
         self.sent_ms = 0
@@ -389,16 +428,28 @@ class OmniRealtimeSession:
         self.response_open = False
 
     async def greet(self):
-        """Wake greeting in the model's own voice."""
-        await self.ensure_connected()
-        await self.drop_pending_input()
-        # Fresh time/weather and the device tools (they register after the session opened)
-        await self._send({"type": "session.update", "session": {
-            "instructions": self._instructions(), **({"tools": self._tools()} if self._uses_tools() else {})}})
-        await self._send({"type": "response.create", "response": {"instructions": (
-            "The user just woke you up with your wake word. Greet them in one short, warm "
-            "sentence (vary it) and ask what they need. Any time-of-day greeting must match the "
-            "local time in your context.")}})
+        """Wake greeting in the model's own voice. If the model hasn't started
+        answering after GREET_TIMEOUT, the session is replaced and asked again once."""
+        for attempt in (1, 2):
+            await self.ensure_connected()
+            await self.drop_pending_input()
+            self._response_started.clear()
+            # Fresh time/weather and the device tools (they register after the session opened)
+            await self._send({"type": "session.update", "session": {
+                "instructions": self._instructions(), **({"tools": self._tools()} if self._uses_tools() else {})}})
+            await self._send({"type": "response.create", "response": {"instructions": (
+                "The user just woke you up with your wake word. Greet them in one short, warm "
+                "sentence (vary it) and ask what they need. Any time-of-day greeting must match the "
+                "local time in your context.")}})
+            try:
+                await asyncio.wait_for(self._response_started.wait(), GREET_TIMEOUT)
+                return
+            except asyncio.TimeoutError:
+                logger.bind(tag=TAG).warning(
+                    f"Omni realtime: no greeting {GREET_TIMEOUT}s after asking (attempt {attempt}); "
+                    "replacing the session")
+                await self.close(reopen=False)
+        raise RuntimeError("the model did not greet")
 
     async def cancel(self):
         """The client interrupted the reply."""
@@ -457,6 +508,7 @@ class OmniRealtimeSession:
         self.last_event_at = time.monotonic()
         if t == "response.created":
             self.response_open = True
+            self._response_started.set()
         # Diagnostics: OMNI_TRACE=1 logs every model event except the deltas
         if os.environ.get("OMNI_TRACE") and not t.endswith(".delta"):
             logger.bind(tag=TAG).info(f"Omni trace: {t} {json.dumps(msg, ensure_ascii=False)[:200]}")
